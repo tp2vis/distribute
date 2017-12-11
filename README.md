@@ -12,6 +12,8 @@ Our github repo for distribution : https://github.com/tp2vis/distribute
 
 Efforts behind the scenes will be released : https://github.com/kodajn/tp2vis (currently not shown yet)
 
+What you need really is "tp2vis.py" in your work directory.
+
 ## Release Schedule
 
 The current beta release is for experts with experience on interferometer data reduction with CASA. We seek feedback from the experts for further development. Release to non-experts is planned in future.
