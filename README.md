@@ -12,7 +12,7 @@ Our github repo for distribution : https://github.com/tp2vis/distribute
 
 Efforts behind the scenes will be released : https://github.com/kodajn/tp2vis (currently not shown yet)
 
-What you need really is "tp2vis.py" in your work directory.
+What you need really is one file "tp2vis.py" in your work directory.
 
 ## Release Schedule
 
