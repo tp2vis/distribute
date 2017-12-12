@@ -8,11 +8,9 @@ a joint deconvolution using for example CASA's
 [**tclean()**](https://casa.nrao.edu/casadocs/casa-5.0.0/global-task-list/task_tclean/about)
 method.
 
-Our github repo for distribution : https://github.com/tp2vis/distribute
+Our github repo for distribution : https://github.com/kodajn/tp2vis_dist
 
-Efforts behind the scenes will be released : https://github.com/kodajn/tp2vis (currently not shown yet)
-
-What you need really is one file "tp2vis.py" in your work directory.
+Efforts behind the scenes will be released : https://kodajn.github.io/tp2vis (currently not shown yet)
 
 ## Release Schedule
 
