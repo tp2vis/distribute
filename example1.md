@@ -11,9 +11,6 @@ Here we will show how to do this with tp2vis using basic UNIX and CASA commands
 Try TP2VIS with the M100 data used for Feather. The document for Feather is:
 https://casaguides.nrao.edu/index.php/M100_Band3_Combine_4.3#Notes_on_the_Automasking_procedure
 
-You can either download the data directly from NRAO (about 25GB), or grab our prepared smaller
-5 km/s datasets from http://admit.astro.umd.edu/~teuben/TP2VIS/
-
 
 ### (0) Download and trim ALMA 12m & 7m visibilities and TP data cube
 
