@@ -28,7 +28,7 @@ import matplotlib.pyplot as plt
 
     
 def tp2vis_version():
-    print "version 10-dec-2017"
+    print "version 12-dec-2017"
 
    
 def axinorder(image):
