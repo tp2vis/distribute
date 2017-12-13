@@ -102,15 +102,15 @@ In the combined dirty map, we didn't see much of extended emission from TP in (4
 
 "mode='const'" in tp2viswt sets the WEIGHT of all visibilities to the value specified by "value=".
 
-    tp2viswt(msTP="test_TP.ms",mode='const',value=0.015)
+    tp2viswt("test_TP.ms",mode='const',value=0.015)
 
 alternatively, "mode='multiply'" multiplies the current WEIGHT by "value=".
 
-    tp2viswt(msTP="test_TP.ms",mode='multiply',value=10.0)
+    tp2viswt("test_TP.ms",mode='multiply',value=10.0)
 
 to go back to the RMS-based WEIGHT,
 
-    tp2viswt(msTP="test_TP.ms",mode='rms',value=0.15379972353470259)
+    tp2viswt("test_TP.ms",mode='rms',value=0.15379972353470259)
 
 ### Go back to (3)(4)
 
