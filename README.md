@@ -7,10 +7,12 @@ The TP visibilities can then be combined with the interferometric visibilities i
 a joint deconvolution using for example CASA's
 [**tclean()**](https://casa.nrao.edu/casadocs/casa-5.0.0/global-task-list/task_tclean/about)
 method.
+TP2VIS requires **CASA 5 or above.**
 
 Our github repo for distribution : https://github.com/tp2vis/distribute
 
 Efforts behind the scenes will be released (coming soon): https://kodajn.github.io/tp2vis
+
 
 ## Release Schedule
 
@@ -18,9 +20,9 @@ The current beta release is for experts with experience on interferometer data r
 
 ## Download
 
-       git clone git@github.com:tp2vis/distribute
+Click "Clone or download" on [top page](https://github.com/tp2vis/distribute) for download options, or 
 
-or click "Clone or download" on this page for download options.
+       git clone git@github.com:tp2vis/distribute
 
 ## Usage
 
