@@ -43,7 +43,7 @@ Make a 7m+12m dirty map for comparison later
 
 ### (1) Make a pointing (ptg) file
 
-An ascii file with a list of pointing coordinates. You can manually type in, or take a set of pointings from 12m or 7m data:
+Need an ascii file with a list of pointing coordinates. You can manually type in, or take a set of pointings from 12m or 7m data:
 
     listobs('M100_12m_CO.ms',listfile='12m.log')
     UNIX> cat 12m.log | grep "none" | awk '{print $4,$5}' | sed 's/\([0-9]*\)\:\([0-9]*\):\([0-9.]*\) /\1h\2m\3 /' | sed 's/\([0-9][0-9]\)\.\([0-9][0-9]\)\.\([0-9][0-9]\)\./\1d\2m\3\./' | awk '{printf("J2000 %ss %ss\n",$1,$2)}' > 12.ptg
