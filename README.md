@@ -10,12 +10,17 @@ method.
 
 Our github repo for distribution : https://github.com/tp2vis/distribute
 
-Efforts behind the scenes will be released : https://kodajn.github.io/tp2vis
+Efforts behind the scenes will be released (coming soon): https://kodajn.github.io/tp2vis
 
 ## Release Schedule
 
 The current beta release is for experts with experience on interferometer data reduction with CASA. We seek feedback from the experts for further development. Release to non-experts is planned in future.
 
+## Download
+
+       git clone git@github.com:tp2vis/distribute
+
+or click "Clone or download" on this page for download options.
 
 ## Usage
 
