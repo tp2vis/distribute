@@ -24,6 +24,8 @@ Click "Clone or download" on [top page](https://github.com/tp2vis/distribute) fo
 
        git clone git@github.com:tp2vis/distribute
 
+Only one file "tp2vis.py" is needed.
+
 ## Usage
 
 To give you a quick idea how to run TP2VIS, here are the basic commands in CASA, broken into 5 pieces. Examples are listed below.
