@@ -50,7 +50,7 @@ Need an ascii file with a list of pointing coordinates. You can manually type in
 
 ### (2) Find an RMS noise of TP data cube
 
-Use, e.g., first 10 channels to measure RMS in this example.
+Use, e.g., first 6 channels to measure RMS in this example.
 
     imstat('M100_TP_CO_cube.bl.image',axes=[0,1])['rms'][:6].mean()
     --> rms=0.15379972353470259
