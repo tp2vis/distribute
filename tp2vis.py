@@ -1,34 +1,87 @@
-#
 # A collection of TP2VIS functions to aid in combining ALMA
 # Total Power and Visibilities in a Joint Deconvolution
+#
+# Authors: Jin Koda & Peter Teuben
 #
 # Public functions:
 #    tp2vis_version()
 #    tp2vis(imagename, msname, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True)
-#    tp2viswt(msTP, int_ms, tp_beam, int_beam, rms, factor)
+#    tp2viswt(mslist,mode='stat',value=0.5)
+#    tp2vistweak(dirtyname,cleanname,pbcut=0.8)
+#    tp2vispl(mslist,ampPlot=True,show=False)
 #
 # Helper functions:
+#    tp2vis_version()
 #    getptg()
 #    axinorder()
 #    arangeax()
-#
-# PJT functions:    see pjt.py
-# PLOT functions:   see tp2visplot.py
-# These and regressions tests are available from the full distribution in
-# https://github.com/kodajn/tp2vis
+#    guessarray()
 #
 
-import os, sys, shutil, time
+import os, sys, shutil, re, time, datetime
 import numpy as np
 import matplotlib.pyplot as plt
 
-## ========================
-## Define support functions
-## ========================
+## ===========================================
+## Global parameters: observatory & telescopes
+## ===========================================
 
+# Following assumes uniform, non-heterogeneous, dish size
+t2v_arrays = {}
+
+# ALMA 12m array parameters
+apara = {'observatory':'ALMA',                  # observatory name
+         'antList':    ['DA','DV'],             # list of ant names (DA##, DV##)
+         'dish':        12.0,                   # dish diam [meters]
+         'fwhm100':     65.2,                   # fwhm@100GHz [56.5"@115.2GHz]
+         'maxRad':     999.0}                   # cutoff rad of FoV [arcsec]
+t2v_arrays['ALMA12'] = apara.copy()
+
+# ALMA 7m
+apara = {'observatory':'ALMA',
+         'antList':    ['CM'],                  # CM##
+         'dish':         7.0,
+         'fwhm100':    105.0,                   # fwhm@100GHz [35"@300GHz]
+         'maxRad':     999.0}
+t2v_arrays['ALMA07'] = apara.copy()
+
+# ALMA TP [to deal with single-dish TP cube]
+apara = {'observatory':'ALMA',
+         'antList':    ['TP'],
+         'dish':        12.0,
+         'fwhm100':     65.2,                   # fwhm@100GHz [56.5"@115.2GHz]
+         'maxRad':     999.0}
+t2v_arrays['ALMATP'] = apara.copy()
+
+# VIRTUAL TP2VIS array [for TP visibilities]
+if False:                                       # once vpmanager is fixed,
+    apara = {'observatory':'VIRTUAL',           # a primary beam of 
+             'antList':    ['VIRTUAL'],         # virtual interferometer
+             'dish':        12.0,               # should be defined here.
+             'fwhm100':     65.2,
+             'maxRad':     150.0}
+    vp.reset()                                  # reset vpmanager
+    vp.setpbgauss(telescope=apara['antList'][0],# set PB of VI in vpmanager
+                  halfwidth=str(apara['fwhm100'])+'arcsec',
+                  maxrad=str(apara['maxRad'])+'arcsec',
+                  reffreq='100.0GHz',
+                  dopb=True)
+    vp.summarizevps()
+else:                                           # without vpmanager working,
+    apara = {'observatory':'ALMA',              # use ALMA for now
+             'antList':    ['ALMA'],
+             'dish':        12.0,
+             'fwhm100':     65.2,
+             'maxRad':     999.0}
+t2v_arrays['VIRTUAL']    = apara.copy()
+
+
+## =================
+## Support functions
+## =================
     
 def tp2vis_version():
-    print "version 0.6 (12-dec-2017)"
+    print "06-jan-2018"
 
    
 def axinorder(image):
@@ -39,18 +92,17 @@ def axinorder(image):
     ia.open(image)
     h0 = ia.summary()
     ia.done()
-    aname = h0['axisnames']
-    print "AXIS NAMES:",aname
+    axname = h0['axisnames']
+    print "AXIS NAMES:",axname
     print "AXIS SHAPES:",list(h0['shape'])
-
 
     order = ''
     for ax in ['Right Ascension','Declination','Stokes','Frequency']:
-        if not ax in aname:
+        if not ax in axname:
             print "ERROR: No %s axis in %s" % (ax,image)
             raise
         else:
-            iax   = list(aname).index(ax)
+            iax   = list(axname).index(ax)
             order = order + '%1d' % (iax)
 
     if order == '0123':
@@ -64,16 +116,16 @@ def arangeax(image):
         axinorder() is already run and 4 axes exist in order.
         Helper function for tp2vis()    
     """
-    imageout = 'tmp_trans_' + image        # danger: using fixed name
+    imageout = image + 'tmp_trans_' 
     os.system('rm -rf %s' % imageout)
     ia.open(image)
     h0 = ia.summary()
-    aname = h0['axisnames']
+    axname = h0['axisnames']
 
     order = ''
     for ax in ['Right Ascension','Declination','Stokes','Frequency']:
-        if ax in aname:
-            iax   = list(aname).index(ax)
+        if ax in axname:
+            iax   = list(axname).index(ax)
             order = order + '%1d' % (iax)
     if len(order) ==4:                         # all axes exist
         # on older CASA before 5.0 you will loose beam and
@@ -91,7 +143,6 @@ def arangeax(image):
 def getptg(pfile):
     """ get the ptg's (CASA pointings) from a ptg file into a list                                                            
     'J2000 19h00m00.00000 -030d00m00.000000',...
-    required for the simulation tools
             Helper function for tp2vis()
     """
     fp = open(pfile)
@@ -103,6 +154,38 @@ def getptg(pfile):
         w = line.strip().split()
         ptg.append("%s %s %s" % (w[0],w[1],w[2]))
     return ptg
+
+def guessarray(msfile):
+    """ guess array name from MS
+    this function uses the definitions of known arrays at the beggening
+    of this code.
+
+    msfile:    measurement set name
+    Helper function for tp2vis()
+    """
+
+    # Read antenna names in MS
+    if not os.path.exists(msfile):              # make sure MS exists
+        print "GUESSARRAY ERROR: no %s exists" % (msfile)
+        return None
+    tb.open(msfile+'/ANTENNA')                  # open MS
+    antnames = tb.getcol('NAME')                # read ant names
+    tb.close()                                  # close MS
+
+    # Calculate likelihood of each array type
+    probs = {}
+    for iarray in t2v_arrays.keys():            # over known arrays
+        nant = 0                                # reset counter
+        for iant in t2v_arrays[iarray]['antList']:  # how many ants of each
+            nant += sum([(iant in x) for x in antnames]) # known array in MS
+        frac = float(nant) / len(antnames)      # frac of ants of known array
+        probs[iarray] = frac
+
+    # Pick array and return
+    mostlikelyarray = max(probs,key=probs.get)  # most likely array
+
+    return mostlikelyarray
+
 
 ## ==========================================================
 ## TP2VIS: main function to convert TP cube into visibilities
@@ -116,8 +199,8 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
     outfile   Output MS filename. Must not exist
     ptg       this can be one of:
               None:     NOT ALLOWED ANYMORE UNTIL RE-IMPLEMENTED TO AUTO_FILL
-              string:   ptg file  (or list of strings?) - see also pjt_ms_ptg()
-              list:     list of strings (from e.g. pjt_ms_ptg())
+              string:   ptg file  (or list of strings?) - see also qtp_ms_ptg()
+              list:     list of strings (from e.g. qtp_ms_ptg())
               ms:       MS containing the pointings
     Optional:
     ---------
@@ -127,44 +210,23 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
     rms       set the RMS (by default this will be ignored) in the infile
               in order to compute an initial guess for the weights
               Should be Jy/beam
+              See also tp2viswt(mode=3)
     nvgrp     Number of visibility group (nvis = 1035*nvgrp)
               The number of antenna is hardcoded as 46
     deconv    Use deconvolution as input model (True) -
-              you almost never want to change this
+              almost never want to change this - useful for Jy/pixel maps
 
     """
 
-    # Bug fixes
-    # =========
+    # CASA bug fixes
+    # ==============
 
-    use_vp       = False
     bug001_Fixed = False
-
-    # Useful constants
-    # ================
-    cms = qa.constants('c')['value']            # Speed of light in m/s
-    apr = 180.0 * 3600.0 / np.pi                # arcsec per radian
 
     # Parameters
     # ==========
 
-    seed            = 123                       # for random number
-
-    # Total Power (TP) dish parameters
-    tp_beamFWHM0   = 56.6                       # arcsec, TP beam at ref freq.
-    tp_beamFreq0   = 115.2e9                    # Hz, ref freq of TP beam
-
-    # Virtual Interferometer (VI) parameters
-    if use_vp:              # use vp.setpbgauss(telescope='VIRTUAL',....)
-        vi_antname      = 'VIRTUAL'             # should adjust these params.
-        vi_dish         = 10.0
-        vi_beamFWHM0    = 56.6
-        vi_beamFreq0    = 115.2e9
-    else: 
-        vi_antname      = 'ALMA'                # use ALMA
-        vi_dish         = 12.0                  # meters, VI dish size
-        vi_beamFWHM0    = 56.6                  # arcsec, VI beam at ref freq.
-        vi_beamFreq0    = 115.2e9               # Hz, ref freq of VI beam
+    seed  = 123                                 # for random number
 
     # Query the input image
     # =====================
@@ -180,73 +242,53 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
     else:                                       # if not, rearrange
         imagename = arangeax(infile)            # and use re-aranged data
 
-    fax   = 3                                   # freq axis=3
+    # Parameters from TP cube header
+    # ==============================
 
-    # Parameters from header
-    h0        = imhead(imagename,mode='list')
-    shape     = h0['shape']
-    nx        = h0['shape'][0]                  # RA
-    ny        = h0['shape'][1]                  # DEC
-    dx        = np.abs(h0['cdelt1'])            # in radians!
-    dy        = np.abs(h0['cdelt2'])
-    objname   = h0['object']                    # object name
-    nchan     = h0['shape'][3]                  # # of channels
-    fstart    = h0['crval4']-h0['crpix4']*h0['cdelt4']  # Hz, channel edge
-    fwidth    = h0['cdelt4']                    # Hz, freq width
-    reffreq   = fstart + 0.5*fwidth             # Hz, central freq
-    reflambda = cms / reffreq                   # wavelength [m]
-    refcode   = h0['reffreqtype']               # e.g. 'LSRK'
-    bunit     = h0['bunit'].upper()             # JY/BEAM or JY/PIXEL
+    cms    = qa.constants('c')['value']         # speed of light in m/s
 
-    # Parameters for TP beam
-    # ======================
+    h0         = imhead(imagename,mode='list')
+    cb_shape   = h0['shape']                    # cube shape
+    cb_nx      = h0['shape'][0]                 # num of pixels, RA
+    cb_ny      = h0['shape'][1]                 #              , DEC
+    cb_dx      = np.abs(h0['cdelt1'])           # pixel size [radian]!
+    cb_dy      = np.abs(h0['cdelt2'])
+    cb_objname = h0['object']                   # object name
+    cb_nchan   = h0['shape'][3]                 # num of channels
+    cb_fstart  = h0['crval4']-h0['crpix4']*h0['cdelt4'] # start freq [Hz]
+    cb_fwidth  = h0['cdelt4']                   # chan width [Hz]
+    cb_reffreq = cb_fstart + 0.5*cb_fwidth      # chan central freq [Hz]
+    cb_refwave = cms / (cb_reffreq)             # wavelength [m]
+    cb_refcode = h0['reffreqtype']              # e.g. 'LSRK'
+    cb_bunit   = h0['bunit'].upper()            # JY/BEAM or JY/PIXEL
 
-    # Calculate deconvolution beam (TP beam)
-    tp_beamFWHM    = tp_beamFWHM0*(tp_beamFreq0/reffreq) # arcsec at obs freq
-    tp_beamSigma   = tp_beamFWHM/apr /(2*np.sqrt(2*np.log(2.))) # radian 
-    tp_beamSigmaFT = 1.0/(2.0*np.pi*tp_beamSigma)  # sigma in fourier land
-    print "tp_sigma, tp_sigmaFT: ",tp_beamSigma,tp_beamSigmaFT
+    cb_fstart  = cb_fstart /1.0e9               # Hz -> GHz
+    cb_fwidth  = cb_fwidth /1.0e9
+    cb_reffreq = cb_reffreq/1.0e9
 
-    # Number of pixels per TP beam
-    apixel   = np.abs((dx*apr)*(dy*apr))        # asec2, area in pixel
-    abeam    = (np.pi/(4*np.log(2.)))*tp_beamFWHM**2 # asec2, TP bm area
-    nppb     = abeam/apixel                     # To convert Jy/bm to Jy/pix
-    print "Number of pixels per beam:",nppb
+    # Parameters for TP and virtula interferometer (VI) primary beams
+    # ===============================================================
 
-    # Cutoff of deconvolution beam
-    eps      = 0.001                            # cutoff amp of gauss tail
-    uvMax    = np.sqrt(-2.0*tp_beamSigmaFT**2*np.log(eps)) # & uvmax there
-    uvMax    = np.minimum(maxuv/reflambda,uvMax) # compare with maxuv
-    print "UVMAX:", uvMax/1000.0,"kLambda"
+    twopi  = 2.0*np.pi
+    apr    = qa.convert('1.0rad','arcsec')['value'] # arcsec per radian
+    stof   = 2.0*np.sqrt(2.0*np.log(2.0))           # FWHM=stof*sigma
 
-    # Parameters for VI beam
-    # ======================
+    # TP beam
+    fwhm100   = t2v_arrays['ALMATP']['fwhm100'] # FWHM at 100GHz [arcsec]
+    tp_beamFWHM  = fwhm100*(100.0/cb_reffreq)   # at obs freq [arcsec]
+    tp_beamSigma = tp_beamFWHM/stof/apr         # sigma of TP beam [rad]
+    tp_beamSigFT = 1.0/(twopi*tp_beamSigma)     # sigma in fourier [lambda]
+    print "tp_sigma [rad], tp_sigmaFT [lambda]: ",tp_beamSigma,tp_beamSigFT
 
-    vi_beamFWHM    = vi_beamFWHM0*(tp_beamFreq0/reffreq)        # arcsec
-    vi_beamSigma   = vi_beamFWHM/apr /(2*np.sqrt(2*np.log(2.))) # radian
-    vi_beamSigmaFT = 1.0/(2.0*np.pi*vi_beamSigma)  # sigma in fourier land
-    print "vi_sigma, vi_sigmaFT: ",vi_beamSigma,vi_beamSigmaFT
+    # VI beam
+    vi_antname   = t2v_arrays['VIRTUAL']['observatory'] # VI observatory
+    vi_dish      = t2v_arrays['VIRTUAL']['dish']# VI dish size [m]
 
-    # Generate fake primary beam for virtual interferometric observations
-    #    this beam does not need to be the beam of TP antennas
-    # ===================================================================
-    
-    # make a vpmanager beam for us
-    # BUG?  Despite that we use vp.save and vp.load in pjt_tp() before tclean()
-    #       and even vp.summary says the 12M is present, tclean claims
-    #       VPskyjones says "PB used ALMA"
-    #       Kumar says to use tclean's vptable= argument
-    #       Remy says to use VIRTUAL for 
-    #
-    if use_vp:
-        print "Using vpmanager VIRTUAL beam"
-        vp.reset()
-        vp.setpbgauss(telescope='VIRTUAL',
-                      halfwidth='1.5arcsec',     # PJT test 
-                      maxrad='2.5arcmin',
-                      reffreq='115.2GHz',
-                      dopb=True)
-        vp.summarizevps()
+    fwhm100  = t2v_arrays['VIRTUAL']['fwhm100'] # FWHM at 100GHz [arcsec]
+    vi_beamFWHM  = fwhm100*(100.0/cb_reffreq)   # at reffreq [arcsec]
+    vi_beamSigma = vi_beamFWHM/stof/apr         # sigma of VI beam [rad]
+    vi_beamSigFT = 1.0/(twopi*vi_beamSigma)     # sigma in fourier [lambda]
+    print "vi_sigma [rad], vi_sigmaFT [lambda]: ",vi_beamSigma,vi_beamSigFT
 
     # Obtain pointing coordinates
     # ===========================
@@ -254,28 +296,41 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
     print "Using ptg = ",ptg
     pointings = getptg(ptg)
 
-
     # Deconvolution of TP cube (images) by TP beam
     #   (if deconv=False the input image will be used instead)
     # ========================================================
 
-    # Open TP cube
-    ia.open(imagename)                         
+    apr    = qa.convert('1.0rad','arcsec')['value'] # arcsec per radian
+    cbm    = np.pi/(4.0*np.log(2.0))                # beamarea=cbm*bmaj*bmin
+
+    # Number of pixels per TP beam
+    apixel = np.abs((cb_dx*apr)*(cb_dy*apr))    # area in pixel [arcsec2]
+    abeam  = cbm*tp_beamFWHM**2                 # area of TP beam [arcsec2]
+    nppb   = abeam/apixel                       # To convert Jy/bm to Jy/pix
+    print "Number of pixels per beam:",nppb
+
+    # Cutoff length of TP's gaussian beam tail
+    eps    = 0.001                              # cutoff amp of gauss tail
+    uvcut  = np.sqrt(-2.0*tp_beamSigFT**2*np.log(eps)) # uvdist there
+    uvcut  = np.minimum(maxuv/cb_refwave,uvcut) # compare with maxuv
+    print "UVCUT:", uvcut/1000.0,"kLambda"
 
     # Generate uvdist^2 image
-    du        = 1.0/(nx*dx)
-    dv        = 1.0/(ny*dy)
-    ugrd,vgrd = np.meshgrid(np.arange(ny),np.arange(nx))
-    ugrd      = (ugrd-0.5*(nx-1.0))*du
-    vgrd      = (vgrd-0.5*(ny-1.0))*dv
-    uvgrd2    = ugrd**2+vgrd**2
-    uvgrd2    = np.fft.fftshift(uvgrd2)                   # peak at corner
+    du        = 1.0/(cb_nx*cb_dx)               # pixel sizes in u,v
+    dv        = 1.0/(cb_ny*cb_dy)
+    ugrd,vgrd = np.meshgrid(np.arange(cb_ny),np.arange(cb_nx)) # make grid
+    ugrd      = (ugrd-0.5*(cb_nx-1.0))*du       # [-uspan/2,+uspan/2]
+    vgrd      = (vgrd-0.5*(cb_ny-1.0))*dv       # [-vspan/2,+vspan/2]
+    uvgrd2    = ugrd**2+vgrd**2                 # uvdist^2 image
+    uvgrd2    = np.fft.fftshift(uvgrd2)         # shift peak to corner
 
     del ugrd,vgrd
 
+    # Open TP cube
+    ia.open(imagename)
+
     # Output deconvolved cube
-    if not deconv: 
-        print "No deconvolution done"
+    if not deconv:
         imagedecname = ''
     else:
         imagedecname = 'tmp_imagedec.im'
@@ -283,25 +338,25 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
 
         # Loop over channels
         print "Deconvolution loop starts"
-        for iz in range(nchan):
+        for iz in range(cb_nchan):
 
             # Beam in Fourier domain
-            freq        = fstart+fwidth*(0.5+iz)          # Hz, centfreq of chan
-            beamSigmaFT = tp_beamSigmaFT * freq/reffreq
-            beamFT      = np.exp(-uvgrd2/(2.0*beamSigmaFT**2))
+            freq      = cb_fstart+cb_fwidth*(0.5+iz)      # chan cen freq [GHz]
+            beamSigFT = tp_beamSigFT * freq/cb_reffreq
+            beamFT    = np.exp(-uvgrd2/(2.0*beamSigFT**2))
 
             # Channel image to be deconvolved
-            image       = ia.getchunk([-1,-1,-1,iz],[-1,-1,-1,iz])
+            image     = ia.getchunk([-1,-1,-1,iz],[-1,-1,-1,iz])
                                                           # image[ix][iy][0][0]
-            image       = image / nppb                    # scale to Jy/pixel
-            imageFT     = np.fft.fft2(image,axes=(0,1))
-            nnx         = imageFT.shape[0]
-            nny         = imageFT.shape[1]
-            imageFT     = imageFT.reshape((nnx,nny))      # remove 3rd & 4th ax
+            image     = image / nppb                      # scale to Jy/pixel
+            imageFT   = np.fft.fft2(image,axes=(0,1))
+            nnx       = imageFT.shape[0]
+            nny       = imageFT.shape[1]
+            imageFT   = imageFT.reshape((nnx,nny))        # remove 3rd & 4th ax
 
             # Deconvolution 
             imageFTdec       = imageFT.copy()
-            idx0             = (uvgrd2   > (uvMax**2))    # idx of outer uv
+            idx0             = (uvgrd2   > (uvcut**2))    # idx of outer uv
             idx1             = np.logical_not(idx0)       # idx of inner uv
             imageFTdec[idx1] = imageFT[idx1]/beamFT[idx1] # just for inner uv
             imageFTdec[idx0] = 0.0                        # set outer uv zero
@@ -324,18 +379,18 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
     nant            = 46                        # # of fake antennas
     npair           = nant*(nant-1)/2           # # of baselines
     nvis            = npair * nvgrp             # # of vis per point
-    source          = objname                   # object name
+    source          = cb_objname                # object name
     npnt            = len(pointings)
 
     # Spectral windows
-    spw_nchan       = nchan                     # # of channels
-    spw_fstart      = fstart/1e9                # GHz, start freq
-    spw_fwidth      = fwidth/1e9                # GHz, freq width
-    spw_fresolution = spw_fwidth
+    spw_nchan       = cb_nchan                  # # of channels
+    spw_fstart      = cb_fstart                 # start freq [GHz]
+    spw_fwidth      = cb_fwidth                 # freq width [GHz]
+    spw_fresolution = cb_fwidth
    
-    spw_fband       = 'bandtp'                  # just a name
+    spw_fband       = 'bandtp'                  # fake name
     spw_stokes      = 'I'                       # 1 pol axis (or e.g. 'XX YY')
-    spw_refcode     = refcode                   # e.g. 'LSRK'
+    spw_refcode     = cb_refcode                # e.g. 'LSRK'
 
     # Feed
     fed_mode        = 'perfect X Y'    
@@ -345,25 +400,21 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
     fld_calcode     = 'OBJ'
     fld_distance    = '0m'                      # infinite distance
 
-    # Observatory (note the peculiar order where 'ALMA' is needed to get
-    # obs_obspos, but then we may to need to reset it to 'VIRTUAL'
-    # Is that abuse/overload of the ALMA name?
-    # MS->OBSERVATION->TELESCOPE_NAME
-    obs_obsname     = 'ALMA'
-    obs_obspos      = me.observatory(obs_obsname) # observatory coordinate
-    #if use_vp:
-    #    obs_obsname = 'VIRTUAL'                   # vp needs this, otherwise ALMA is the pb
+    # Observatory
+    obs_obsname     = t2v_arrays['VIRTUAL']['observatory'] # observatory
+    obs_obspos      = me.observatory(obs_obsname)          # coordinate
         
     # Telescopes
-    tel_pbFWHM      = vi_beamFWHM0*(vi_beamFreq0/(spw_fstart*1e9)) # arcsec
+    tel_pbFWHM      = t2v_arrays['VIRTUAL']['fwhm100']*(100./spw_fstart) # asec
     tel_mounttype   = 'alt-az'
     tel_coordsystem = 'local'                   # coordinate of antpos
-    tel_antname     = vi_antname
-    tel_dish        = vi_dish
+    tel_antname     = t2v_arrays['VIRTUAL']['antList'][0]
+    tel_dish        = t2v_arrays['VIRTUAL']['dish']
 
     # Fake antenna parms
-    tel_antposx=tel_antposy=tel_antposz=np.arange(nant)*1000.0
-                                                # fake ant positions
+    tel_antposx     = np.arange(nant)*1000.0    # fake ant positions
+    tel_antposy     = np.arange(nant)*1000.0
+    tel_antposz     = np.arange(nant)*1000.0
     tel_antdiam     = [tel_dish] * nant         # all dish sizes the same
 
     # Numbers of vis per pointing and for all pointings
@@ -374,27 +425,29 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
     tend            = +ttot/2                   # so that (tend-tstart)/tvis
                                                 # = num of vis per point
 
-    # Print parameters & set them in CASA
-    # ===================================
+    # Print parameters
+    # ================
 
     print "TP2VIS Parameters"
     print "   input image name:                    %s" % (imagename)
-    print "   image shape:                         %s" % (repr(shape))
+    print "   image shape:                         %s" % (repr(cb_shape))
     print "   output measurement set name:         %s" % (outfile)
     print "   number of pointings:                 %d" % (npnt)
     print "   number of visibilities per pointing: %d" % (tpnt*npair)
     print "   start frequency [GHz]:               %f" % (spw_fstart)
     print "   frequency width [GHz]:               %f" % (spw_fwidth)
     print "   frequency resolution [GHz]:          %f" % (spw_fresolution)
-    print "   freq axis [0=first]:                 %d" % (fax)
     print "   freq channels:                       %d" % (spw_nchan)
     print "   polarizations:                       %s" % (spw_stokes)
     print "   antenna name:                        %s" % (tel_antname)
     print "   VI primary beam fwhm [arcsec]:       %f" % (tel_pbFWHM)
-    print "   VI primary beam sigmaFT [m]:         %f" % (vi_beamSigmaFT*reflambda)
+    print "   VI primary beam sigmaFT [m]:         %f" % (vi_beamSigFT*cb_refwave)
     print "   ttot                                 %f" % (ttot)
     print "   frame:                               %s" % (spw_refcode)
     print "   seed:                                %d" % (seed)
+
+    # Set parameters in CASA
+    # ======================
 
     spw_fstart        = str(spw_fstart)      + 'GHz'
     spw_fwidth        = str(spw_fwidth)      + 'GHz'
@@ -405,15 +458,9 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
   
     sm.open(outfile)
 
-    if use_vp:                                  # turn on once CASA settled
-        vptable = outfile + '/TP2VISVP'
-        vp.saveastable(vptable)
-    else:
-        vptable = None
-
-    sm.setconfig(telescopename=obs_obsname,      # VIRTUAL (ALMA would cause it to use ALMA pb)
-                referencelocation=obs_obspos,    # ALMA
-                antname=tel_antname,             # VIRTUAL
+    sm.setconfig(telescopename=obs_obsname,
+                referencelocation=obs_obspos,
+                antname=tel_antname,
                 mount=tel_mounttype,
                 coordsystem=tel_coordsystem,
                 x=tel_antposx,y=tel_antposy,z=tel_antposz,
@@ -447,11 +494,10 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
                 usehourangle=True,
                 referencetime=me.epoch('utc', 'today'))
 
-
     # Generate (empty) visibilities
     # =============================
 
-    # This step generates (u,v,w), based on target coord and ant pos
+    # This step generates (u,v,w), based on target coord and antpos
     # following current CASA implementation, but (u,v,w) will be
     # replaced in the next step.
     
@@ -479,20 +525,21 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
     # Genarate (replace) (u,v,w) to follow Gaussian
     # =============================================
 
-    pbsigmaFT       = vi_beamSigmaFT*reflambda  # sigmaF=D/lambda -> D [m]
+    # Beam size in uv [m]
+    beamSigFT = vi_beamSigFT*cb_refwave         # sigmaF=D/lambda -> D [m]
 
     # Include (u,v) = (0,0)
     uu = np.array([0.0])
     vv = np.array([0.0])
 
-    # Rest follows Gaussian distribution with < uvMax^2
+    # Rest follows Gaussian distribution with < uvcut^2
     nuv = 1                                     # (0,0) exists already
-    uvMax2 = (uvMax*reflambda)**2               # 1/lambda -> meter
+    uvcut2 = (uvcut*cb_refwave)**2              # 1/lambda -> meter
     while (nuv<nvis):                           # loop until enough
         nrest = nvis-nuv
-        utmp,vtmp = np.random.normal(scale=pbsigmaFT,size=(2,nrest))
-        ok    = utmp**2+vtmp**2 < uvMax2        # generate gauss and
-        uu    = np.append(uu,utmp[ok])          # ok for uvdist<uvMax
+        utmp,vtmp = np.random.normal(scale=beamSigFT,size=(2,nrest))
+        ok    = utmp**2+vtmp**2 < uvcut2        # generate gauss and
+        uu    = np.append(uu,utmp[ok])          # ok for uvdist<uvcut
         vv    = np.append(vv,vtmp[ok])
         nuv   = uu.size
 
@@ -524,10 +571,9 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
         print "WARNING: no uvw?"
 
 
-    # Set WEIGHT column temporarily
-    # =============================
+    # Set WEIGHT and SIGMA columns temporarily
+    # ========================================
 
-    # Deal with the WEIGHT column in the MS table
     # Adjust weights
     #   weight of individual vis = sqrt(nvis)*rmsJy
     #   after natural wtg --> sqrt(nvis)*rmsJy / sqrt(nvis) = rmsJy
@@ -539,7 +585,11 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
         w = 1.0/(w*w)
         print "WEIGHT: Old=%s New=%g Nvis=%d" % (weight[0,0],w,nvis)
         weight[:,:] = w                         # weight[npol,nvis*npnt]
-        tb.putcol('WEIGHT',weight)
+        tb.putcol('WEIGHT',weight)              # set WEIGHT
+        sigma = 1/np.sqrt(weight)               # SIGMA
+        tb.putcol('SIGMA',sigma)                # set SIGMA
+    else:
+        print "The WEIGHT column is not filled"
     tb.close()
 
     del uvw
@@ -547,18 +597,10 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
     # Fill vis amp/phase based on deconvolved TP image
     # ================================================
 
-    print "setdata"                             # Get all fields
-    sm.setdata(fieldid=range(0,npnt))
+    sm.setdata(fieldid=range(0,npnt))           # set all fields
+    sm.setvp(dovp=True,usedefaultvp=False)      # set primary beam
 
-    print "setvp",vptable                       # Set primary beam
-    if use_vp:                                  # turn on once CASA settled
-        # according to Kumar
-        sm.setvp(dovp=True,usedefaultvp=False, vptable=vptable)
-    else:
-        sm.setvp(dovp=True,usedefaultvp=False)
-    vp.summarizevps()
-
-    print "predict"                             # Replace amp/pha - key task
+    print "Running sm.predict"                  # Replace amp/pha - key task
     if deconv:
         sm.predict(imagename=imagedecname)      # deconvolved cube
     else:
@@ -566,6 +608,15 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
 
     # Print Summary
     sm.summary()
+
+    # Save PB info
+    # ============
+
+    f = open(outfile + '/TP2VIS.ascii','w')            # save VP/PB info
+    f.write('TP2VIS definition of VIRTUAL interferometer\n')
+    for key in t2v_arrays['VIRTUAL'].keys():
+        f.write('%s:%s\n' % (key, str(t2v_arrays['VIRTUAL'][key])))
+    f.close()
 
     # Close measurement set
     # =====================
@@ -575,7 +626,6 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
     # Corrections on CASA header
     #   Most of following should not be necessary if CASA has no bug
     # ==============================================================
-
 
     if not bug001_Fixed:
         print "Correcting CASA header inconsistencies [due to CASA bugs]"
@@ -619,283 +669,377 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
 ## TP2VISWT: Explore different weights for TP visibilities
 ## =======================================================
            
-def tp2viswt(msTP=None, ms07=None, ms12=None, tp_beam=None, int_beam=None, rms=None, value=1.0, mode=0):
+def tp2viswt(mslist, value=1.0, mode='statistics',makepsf=True):
     """
 
     Parameters
     -----------
-    Need one of msTP, ms07, and ms12
-    msTP       MS to report weights, or compute new weights for
-    
-    ms07       MS for  7m, needed to accumulate weights for msTP weights
-    ms12       MS for 12m, needed to accumulate weights for msTP weights
+    mslist     MS(s) to report weights, or compute new weights for
 
+    value      (mode=1,2,3) value to be applied applied to weight
+    
     mode       0 or 'statistics'   (default)
                1 or 'constant'
                2 or 'multiply'
                3 or 'rms'
-               4 or 'beammatching'
+               4 or 'beammatch'
 
-    value      (mode=1,2,3) value to be applied applied to weight
-
-    tp_beam    either a beamsize in arcsec, or a CASA image
-    int_beam   either a beamsize in arcsec, or a CASA image (image option
-               not supported yet)
+    makepsf    True/False for mode='beammatch'
 
     Example usage:
     --------------
 
-    Report weights for "v1.ms"  (TP or INT allowed)
-    > tp2viswt("v1.ms",mode=0)              
+    Report weights for "v1.ms"
+    > tp2viswt("v1.ms",mode='stat')              
                        
     Set weights to 0.01
-    > tp2viswt("v1.ms",mode=1,value=0.01)               
+    > tp2viswt("v1.ms",mode='const',value=0.01)               
   
     Multiply weights by 3
-    > tp2viswt("v1.ms",mode=2,value=3.0)
+    > tp2viswt("v1.ms",mode='mult',value=3.0)
 
-    Report beta for beam size weights
-    > tp2viswt(tp_beam='dirtymap.TP.psf',int_beam=2.0)
-
-    Apply beam size weights to "tp.ms"
-    > tp2viswt("tp.ms","v1.ms","v2.ms",'dirtymap.TP.psf',2.0,mode=4)
+    Set weights to match beam sizes [need all MSs as input]
+    > tp2viswt(["tp.ms","v07m.ms","v12m.ms"],mode='beam',makepsf=True)
       
     """
 
     # Parameters
     # ----------
 
-    # Lists of measurement sets
+    # Separate MS inputs into INT and TP
+
+    if type(mslist) != type([]): mslist = [mslist]
     msINT = []
-    if ms12 != None:
-        if type(ms12) != type([]): ms12 = [ms12]
-        for ims in ms12:
+    msTP  = []
+    for ims in mslist:
+        array = guessarray(ims)
+        if array   == 'ALMA12':
             msINT.append(ims)
-    if ms07 != None:
-        if type(ms07) != type([]): ms07 = [ms07]
-        for ims in ms07:
+        elif array == 'ALMA07':
             msINT.append(ims)
+        elif array == 'VIRTUAL':
+            msTP.append(ims)
 
-    mslist = list(msINT)
-    if msTP != None:
-        if type(msTP) != type([]): msTP = [msTP]
-        for ims in msTP:
-            mslist.append(ims)
-
-    if len(msINT) == 0:
-        msINT  = None
-
-    if len(mslist) == 0:
-        mslist = None
-
-    # Translate mode if set with chars
+    # Translate mode into operation name
     if type(mode) is str:
-        if   'sta' in mode.lower(): mode = 0 # statistics
-        elif 'con' in mode.lower(): mode = 1 # constant
-        elif 'mul' in mode.lower(): mode = 2 # multiply
-        elif 'rms' in mode.lower(): mode = 3 # rms-based
-        elif 'bea' in mode.lower(): mode = 4 # beam matching
-        elif 'plo' in mode.lower(): mode = 6 # plot
+        if   'sta' in mode[:3].lower(): oper = 'statistics'
+        elif 'con' in mode[:3].lower(): oper = 'constant'
+        elif 'mul' in mode[:3].lower(): oper = 'multiply'
+        elif 'rms' in mode[:3].lower(): oper = 'rms'
+        elif 'bea' in mode[:3].lower(): oper = 'beammatch'
+
+    if type(mode) is int:
+        if   mode == 0: oper = 'statistics'
+        elif mode == 1: oper = 'constant'
+        elif mode == 2: oper = 'multiply'
+        elif mode == 3: oper = 'rms'
+        elif mode == 4: oper = 'beammatch'
+
+    # Define stat outputs
+    # -------------------
+    def wtstat(mslist,comment=''):
+        print "%-4s%18s %4s %4s %4s %8s %8s %12s %12s %12s %12s" \
+            % (comment,'name','spw#','npnt','npol','nvis',\
+                   'fwidth','min','max','mean','std')
+
+        for ims in mslist:
+
+            ms.open(ims,nomodify=True)          # open MS
+            ms.selectinit(reset=True)           # all spws
+            spwinfo= ms.getspectralwindowinfo() # get spw info
+            spwlist= spwinfo.keys()             # list of SPWs
+
+            for ispw in spwlist:                # get SPW info and WEIGHT
+                spwid     = spwinfo[ispw]['SpectralWindowId']
+                numchan   = spwinfo[ispw]['NumChan']
+                chan1freq = spwinfo[ispw]['Chan1Freq'] / 1.0e9 # GHz
+                chanwidth = spwinfo[ispw]['ChanWidth'] / 1.0e9 # GHz
+
+                ms.selectinit(datadescid=spwid)
+
+                field_id  = np.unique(ms.getdata('field_id')['field_id'])
+                npnt      = len(field_id)       # num of fields
+                weight    = ms.getdata('weight')['weight'] # (npol,nvis)
+                npol      = weight.shape[0]     # num of polarizations
+                nvis      = weight.size         # num of visibilities
+
+                wmin      = weight.min()        # weight min
+                wmax      = weight.max()        # weight max
+                wmean     = weight.mean()       # weight mean
+                wstd      = weight.std()        # weight std deviation
+             
+                wmin1GHz  = wmin  / np.abs(chanwidth)
+                wmax1GHz  = wmax  / np.abs(chanwidth)
+                wmean1GHz = wmean / np.abs(chanwidth)
+                wstd1GHz  = wstd  / np.abs(chanwidth)
+
+                print "%22s %4d %4d %4d %8d %8s %12.6f %12.6f %12.6f %12.6f" \
+                    % (ims,spwid,npnt,npol,nvis,'/chanw',wmin,wmax,wmean,wstd)
+                print "%46s %8s %12.6f %12.6f %12.6f %12.6f" \
+                    % ('','/1GHz',wmin1GHz,wmax1GHz,wmean1GHz,wstd1GHz)
+
+
+            ms.close()
 
     # Calculate WEIGHT max & min (default)
     # --------------------------
-    if (mode == 0):      # "statistics"
-        print "TP2VISWT: statistics of weights"
+    if oper == 'statistics':
 
-        print "%20s %12s %13s %13s %13s %13s" \
-            % ('MS','nvis','min','max','mean','std')
-        for ims in mslist:
-            tb.open(ims)
-            weight = tb.getcol('WEIGHT')
-            nvis   = weight.size
-            imin   = weight.min()
-            imax   = weight.max()
-            imean  = weight.mean()
-            istd   = weight.std()
-            print "%20s %12d %13.6f %13.6f %13.6f %13.6f" \
-                % (ims,nvis,imin,imax,imean,istd)
-            tb.close()
+        print "TP2VISWT: statistics of weights"
+        wtstat(mslist)                          # print stat of WEIGHT
 
         return
 
     # Set WEIGHT to const.
     # --------------------
-    elif (mode == 1):      # "constant"
-        print "TP2VISWT: set the weights = %g" % (value)
+    elif oper == 'constant':
 
-        for ims in mslist:
-            tb.open(ims,nomodify=False)
-            weight = tb.getcol('WEIGHT')
-            nvis=weight.size
-            w = value
-            print "%20s     Old=%s New=%g Nvis=%d" % (ims,weight[0,0],w,nvis)
-            weight[:,:] = w           # weight[npol,nvis]
-            tb.putcol('WEIGHT',weight)
-            tb.close()
+        if value == None:
+            print "TP2VISWT ERROR: constant weight value not given."
+            return
+        else:
+            print "TP2VISWT: set the weights = %g, sigmas = %g" \
+                % (value,1/np.sqrt(value))
+
+        wtstat(mslist,comment="Old:")           # stat before operation
+        for ims in mslist:                      # loop over MSs
+            tb.open(ims,nomodify=False)         # open MS modifiable
+            weight = tb.getcol('WEIGHT')        # get WEIGHT array format
+            weight[:,:] = value                 # constant WEIGHT[npol,nvis]
+            tb.putcol('WEIGHT',weight)          # set WEIGHT
+            sigma = 1/np.sqrt(weight)           # SIGMA
+            tb.putcol('SIGMA',sigma)            # set SIGMA
+            tb.close()                          # close MS
+        wtstat(mslist,comment="New:")           # stat after operation
 
         return
 
     # Multipy constant to current WEIGHT
     # ----------------------------------
-    elif (mode == 2):      # "multiply"
-        print "TP2VISWT: multiply the weights by %g" % (value)
+    elif oper == 'multiply':
 
-        for ims in mslist:
-            tb.open(ims,nomodify=False)
-            weight = tb.getcol('WEIGHT')
-            nvis=weight.size
-            print "%20s      Old=%s New=%g Nvis=%d" \
-                % (ims,weight[0,0],weight[0,0]*value,nvis)
-            weight = value * weight
-            tb.putcol('WEIGHT',weight)
-            tb.close()
+        if value == None:
+            print "TP2VISWT ERROR: multiplication value not given."
+            return
+        else:
+            print "TP2VISWT: multiply the weights by %g" % (value)
+
+        wtstat(mslist,comment="Old:")           # stat before operation
+        for ims in mslist:                      # loop over MSs
+            tb.open(ims,nomodify=False)         # open MS modifiable
+            weight = tb.getcol('WEIGHT')        # get WEIGHT
+            weight = value * weight             # multiply
+            tb.putcol('WEIGHT',weight)          # set WEIGHT
+            sigma  = 1/np.sqrt(weight)          # SIGMA
+            tb.putcol('SIGMA',sigma)            # set SIGMA
+            tb.close()                          # close MS
+        wtstat(mslist,comment="New:")           # stat after operation
 
         return
 
     # From RMS in TP cube and Nvis
     # ----------------------------
-    elif (mode == 3):      # "rms-based"
-        print "TP2VISWT: adjust the weights using rms = %g" % (value)
+    elif oper == 'rms':
 
         if value == None:
-            print "WEIGHT mode=3  rms not given. set value=rms"
+            print "TP2VISWT ERROR: rms value not given. set value=rms"
             return
+        else:
+            print "TP2VISWT: adjust weights using RMS = %g" % (value)
+            print "  Assumption: MS has only (mosaic) pointings of ONE science"
+            print "  target, and they are arranged under the Nyquist sampling."
 
-        # we need a proper nvis per field:
-        # in tp2vis we observe every field, nvis from the MS needs to be
-        # reduced by # fields (not the POINTINGS table, the SOURCE or FIELD)
-
-        for ims in mslist:
-            tb.open(ims + '/FIELD')
-            src_id = tb.getcol('SOURCE_ID')
-            npnt = len(src_id)
-            tb.close()
-        
-            tb.open(ims,nomodify=False)
-            weight = tb.getcol('WEIGHT')
-            nvis   = weight.size/npnt
-
-            w = value * np.sqrt(nvis)
-            w = 1.0/(w*w)
-            print "%20s      Old=%s New=%g Nvis=%d (per npnt=%d)" \
-                % (ims,weight[0,0],w,nvis,npnt)
-            weight[:,:] = w           # weight[npol,nvis]
-
-            tb.putcol('WEIGHT',weight)
-            tb.close()
+        wtstat(mslist,comment="Old:")           # stat before operation
+        for ims in mslist:                      # loop over MSs
+            tb.open(ims + '/FIELD')             # open FIELD table
+            src_id = tb.getcol('SOURCE_ID')     # list of source_id
+            npnt = len(src_id)                  # obtain # of pointings
+            tb.close()                          # close FIELD table
+            tb.open(ims,nomodify=False)         # open MS
+            weight = tb.getcol('WEIGHT')        # get WEIGHT array
+            nvis   = weight.size/npnt           # num of vis *per pnt*
+            w      = value * np.sqrt(nvis)      # WEIGHT=1/(RMS*sqrt(nvis))^2
+            w      = 1.0/(w*w)
+            weight[:,:] = w                     # weight[npol,nvis]
+            tb.putcol('WEIGHT',weight)          # set WEIGHT
+            sigma  = 1/np.sqrt(weight)          # SIGMA
+            tb.putcol('SIGMA',sigma)            # set SIGMA
+            tb.close()                          # close MS
+        wtstat(mslist,comment="New:")           # stat after operation
 
         return
 
-    # Size matching
-    # -------------
-    elif (mode == 4):      # "beam size matching"
-        print "TP2VISWT: equalize synthesized and convolution beams"
-        print "          TP weights are set w.r.t. interferometer weights"
+    # Matching beam sizes
+    # -------------------
+    elif oper == 'beammatch':
+
+        # Check relevant MSs in input
+        # ---------------------------
+        if msINT == []:
+            print "TP2VISWT ERROR: no interferometer (12m or 7m) MS in input."
+            return
+        else:
+            line = "Measurement set (INT): "
+            for ims in msINT: line = line +  ", %s" % (ims)
+            print line
+
+        if msTP == []:
+            print "TP2VISWT ERROR: no TP MS in input."
+            return
+        else:
+            line = "Measurement set (TP) : "
+            for ims in msTP: line = line +  ", %s" % (ims)
+            print line
+
+        wtstat(mslist,comment="Old:")               # stat before operation
+
+        # Generate PSF images
+        # ===================
+
+        cms = qa.constants('c')['value']            # Speed of light in m/s
+        apr = qa.convert('1.0rad','arcsec')['value']# arcsec per radian
+        dd = ''.join(re.findall('[0-9]',str(datetime.datetime.now())))
+        baseTP   = 'tmp_msTP_' + dd                 # base name of TP images
+        baseINT  = 'tmp_msINT_'+ dd                 # base name of INT images
+        dirname  = 'trash_tp2viswt'                 # temp directory for PSFs
+
+        if (makepsf):
+            if not os.path.exists(dirname):         # if dir not exists
+                os.makedirs(dirname)                # make it fresh
+
+            angmin  = 999.0                         # derive smallest angle
+            for ims in msINT:                       # that MSs contain
+                ms.open(ims)                        # open MS
+                spwinfo = ms.getspectralwindowinfo()# SPW info
+                spwlist = spwinfo.keys()            # list of SPWs
+                for ispw in spwlist:
+                    freq0 = spwinfo[ispw]['Chan1Freq']           # ref frq [Hz]
+                    uvmax = ms.getdata('uvdist')['uvdist'].max() # max bl [m]
+                    am0   = cms/(freq0*uvmax)       # corresponding angle [rad]
+                    angmin= np.min([angmin,am0])    # smallest angle [rad]
+                ms.close()                          # close MS
+
+            angmin = angmin * apr                   # min angle [arcsec]
+            csize  = angmin / 5.0                   # sample 1/5 min angle
+            imsize = int(120.0/csize)               # PSF images cover 120"
+
+            print "Generating PSF image for TP"     # tclean for TP PSF
+            tclean(vis=msTP, imagename=dirname+'/'+baseTP,niter=0, \
+                  weighting='natural',cell=str(csize)+'arcsec',imsize=imsize)
+            print "Generating PSF image for 7m+12m" # tclean for INT PSF
+            tclean(vis=msINT,imagename=dirname+'/'+baseINT,niter=0, \
+                  weighting='natural',cell=str(csize)+'arcsec',imsize=imsize)
+
+        # Calculate BETA - the ratio of INT and TP weights
+        # ================================================
 
         # calculate Omega_conv
         # --------------------
 
-        if type(int_beam) == float or type(int_beam) == int:
-            print "Assuming spherical int_beam = %g arcsec" % int_beam
-        else:
-            print "fitting not yet implemented for INT_BEAM"
-            print "unexpected int_beam",type(int_beam),int_beam
-            return
-
-        bmaj_int = int_beam / apr              # in radians
-        bmin_int = int_beam / apr
+        beam_int   = imhead(dirname+'/'+baseINT+'.psf')['restoringbeam']
+        bmaj_int   = qa.convert(beam_int['major'],'rad')['value'] # radian
+        bmin_int   = qa.convert(beam_int['minor'],'rad')['value'] # radian
         omega_conv = np.pi/(4*np.log(2.0)) * bmaj_int*bmin_int
 
-        # Calculate Omega_syn
-        # -------------------
+        # Calculate Omega_syn [= W_TP(0,0) = Omega_TP]
+        # --------------------------------------------
 
-        # from math, W_TP(0,0) = 2*pi*sigma^2=2*pi*(FWHM/2sqrt(2ln2))^2
-        if type(tp_beam) == float or type(tp_beam) == int:
-            print "Assuming spherical tp_beam = %g arcsec" % tp_beam
-            bsize1 = bsize2 = tp_beam / apr
-            omega_syn = np.pi/(4*np.log(2.0)) * bsize1 * bsize2
-
-        # read dirty beam of TP and derive W_TP(0,0)
-        else:
-            print "Assuming CASA tp_beam = %s" % tp_beam        
-            ia.open(tp_beam)
-            h0 = ia.summary()
-            naxis1 = h0['shape'][0]
-            naxis2 = h0['shape'][1]
-            naxis3 = h0['shape'][3]   # RA-DEC-POL-FREQ cube !!!
-            cdelt1 = h0['incr'][0]    # radians
-            cdelt2 = h0['incr'][0]
-            # Use middle channel 
-            iz=naxis3
-            if naxis3>1: iz = naxis3/2
-            image_tp  = ia.getchunk([-1,-1,-1,iz],[-1,-1,-1,iz]).squeeze() # image[ix][iy]   
-            ia.close()
-
-            # Calculate W_TP(0,0)
-            #   forward fft requires tricky normalization since B(0,0) is
-            #   set to =1 already. Instead, we use inverse fft
-            image_tp_fft = np.fft.ifft2(image_tp)
-            wtp00 = np.max(np.abs(image_tp_fft))
-        
-            # Calculate Omega_syn [including terms for discrete FT]
-            bsize1 = np.abs(naxis1*cdelt1)
-            bsize2 = np.abs(naxis2*cdelt2)
-        
-            omega_syn = bsize1 * bsize2 * wtp00
-            print "Derived TP beam:",np.sqrt(omega_syn)*apr
+        beam_tp    = imhead(dirname+'/'+baseTP+'.psf')['restoringbeam']
+        bmaj_tp    = qa.convert(beam_tp['major'],'rad')['value'] # radian
+        bmin_tp    = qa.convert(beam_tp['minor'],'rad')['value'] # radian
+        omega_syn  = np.pi/(4*np.log(2.0)) * bmaj_tp *bmin_tp
 
         # Derive beta
         #   omega_syn  = beta/(1+beta)*W_TP(0,0)
         # --------------------------------------
         beta = omega_conv / (omega_syn - omega_conv)
 
-        # Print
         print "Omega_conv [strad] = ",omega_conv
         print "Omega_syn  [strad] = ",omega_syn 
-        print "Beta      = ",beta
+        print "Beta               = ",beta
     
         if beta < 0:
-            print "Problem: you cannot have a TP beam that's smaller than an INT beam"
+            print "ERROR: TP beam smaller than INT beam"
             return
 
         # Adjust weights of TP visibilities
         #   w_TP,k = beta/Nvis_TP * sum_k(w_INT,k)
-        # ----------------------------------------
+        # ========================================
 
-        if msINT == None:
-            print "Need a list of MS in order to set the beam size weights for the msTP"
-            return
-
-        # sumup the weights of INT visibilities
+        # Sumup the weights of INT visibilities [/GHz/pnt/arcmin2]
+        # --------------------------------------------------------
         sumw = 0.0
         for ims in msINT:
-            tb.open(ims)
-            weight_int = tb.getcol('WEIGHT')
-            sumw = sumw + weight_int.sum()              # both POLs
-            tb.close()
-        del weight_int
-        print "INT sumw = ",sumw
+            ms.open(ims,nomodify=True)              # open MS
+            ms.selectinit(reset=True)               # all spws
+            spwinfo   = ms.getspectralwindowinfo()  # get spw info
+            spwlist   = spwinfo.keys()              # list of SPWs
+            iarray    = guessarray(ims)             # array name [e.g. ALMA12]
+            fwhm0 = t2v_arrays[iarray]['fwhm100']   # beam FHWM @100GHz[arcsec]
+            for ispw in spwlist:                    # loop over SPWs
+                spwid     = spwinfo[ispw]['SpectralWindowId']  # spw #
+                ms.selectinit(datadescid=spwid)                # this SPW alone
+                c1freq = spwinfo[ispw]['Chan1Freq'] / 1.0e9    # 1st chan  [GHz]
+                cwidth = spwinfo[ispw]['ChanWidth'] / 1.0e9    # chanwidth [GHz]
+                fwhm   = fwhm0*(100.0/c1freq)/60.0             # FWHM [arcmin]
+                barea  = np.pi*(fwhm/2.0)**2                   # bm area [amin2]
+                npnt   = len(np.unique(ms.getdata('field_id')['field_id']))
+                weight = ms.getdata('weight')['weight']        # (npol,nvis)
+                weight = weight.sum()/npnt/barea/np.abs(cwidth)# /pnt/amin2/GHz
+                sumw   = sumw + weight              # add
+            ms.close()                              # close MS
+    
+        del weight
+        print "INT sumw [/GHz/pnt/arcmin2]   = ",sumw
 
-        # count the number of TP visibilities
+        # Number of TP visibilities [/pnt]
+        # --------------------------------
+
         nvis = 0
         for ims in msTP:
-            tb.open(ims)
-            weight = tb.getcol('WEIGHT')    
-            nvis   = nvis + weight.size
-            tb.close()
-            
-        # weight to be set
-        w = beta * sumw / nvis
-        print "TP nvis,weight=",nvis,w
+            ms.open(ims)
+            ms.selectinit(reset=True)               # all spws
+            for ispw in spwlist:                    # loop over SPWs
+                spwid  = spwinfo[ispw]['SpectralWindowId']     # spw id
+                ms.selectinit(datadescid=spwid)     # this SPW alone
+                npnt   = len(np.unique(ms.getdata('field_id')['field_id']))
+                weight = ms.getdata('weight')['weight']        # (npol,nvis)
+                nvis   = nvis + weight.size/npnt    # num of vis
+            ms.close()                              # close MS
+
+        del weight
+        print "Num of TP vis [per pointing]  = ",nvis
+
+        # Calcuate weight [/GHz/pointing/arcmin2]
+        # ---------------------------------------
+
+        w = beta * sumw / nvis                      # weight to be set
+        print "TP nvis,weight [/GHz/pointing/arcmin2] =",nvis,w
 
         # set TP weights with respect to INT weights
-        for ims in msTP:
-            tb.open(ims,nomodify=False)
-            weight = tb.getcol('WEIGHT')    
-            weight[:,:] = w
-            tb.putcol('WEIGHT',weight)
-            tb.close()
+        # ------------------------------------------
 
+        for ims in msTP:
+            ms.open(ims,nomodify=False)             # open MS
+            ms.selectinit(reset=True)               # all spws
+            spwinfo = ms.getspectralwindowinfo()    # get spw info
+            spwlist = spwinfo.keys()                # list of SPWs
+            iarray  = guessarray(ims)               # array name [e.g. ALMA12]
+            fwhm0   = t2v_arrays[iarray]['fwhm100'] # beam FHWM @100GHz [arcsec]
+            for ispw in spwlist:                    # loop over SPWs
+                spwid     = spwinfo[ispw]['SpectralWindowId']  # spw #
+                ms.selectinit(datadescid=spwid)                # this SPW alone
+                c1freq = spwinfo[ispw]['Chan1Freq'] / 1.0e9    # 1st chan  [GHz]
+                cwidth = spwinfo[ispw]['ChanWidth'] / 1.0e9    # chanwidth [GHz]
+                fwhm   = fwhm0*(100.0/c1freq)/60.0             # FWHM [arcmin]
+                barea  = np.pi*(fwhm/2.0)**2                   # bm area [amin2]
+                record = ms.getdata(['weight','sigma'])        # get records
+                record['weight'][:,:]=w*barea*np.abs(cwidth)   # set new weight
+                record['sigma'][:,:]=1.0/np.sqrt(record['weight'][:,:]) # sigma
+                ms.putdata(record)                  # put them back
+            ms.close()                              # close MS
+
+        wtstat(mslist,comment="New:")               # stat after operation
         return
 
     else:
@@ -904,194 +1048,393 @@ def tp2viswt(msTP=None, ms07=None, ms12=None, tp_beam=None, int_beam=None, rms=N
 
     #-end of tp2viswt()
 
+
+## ============================================
+## TP2VISTWEAK: Adjust beam size after (t)clean
+## ============================================
+
+def tp2vistweak(dirtyname,cleanname,pbcut=0.8):
+    """
+    Mismatch of dirty and clean/restore beam areas becomes noticable in
+    TP+INT joint-deconvolution. This task compares the two beam areas,
+    rescales flux density in residual map, and re-calculates cleaned map.
+
+    Note the mismatch problem exists even for INT alone, but without TP,
+    the true flux is not known, so the problem is not noticable.
+
+
+    Parameters
+    -----------
+    dirtyname   pre-name of dirty images
+    cleanname   pre-name of clean images
+    pbcut       cutoff level of .pb map to define area for flux integration
+
+    Example usage:
+    --------------
+
+    Adjust beam size of residual image and add model and residual.
+    > tp2vistweak('dirty','clean')
+      
+    """
+
+    print "TP2VISTWEAK: scale residual image and re-generate cleaned image"
+    print "  assumes the same shape for dirty and clean images in input"
+
+    # Files
+    # -----
+
+    # File names
+    dirty = dirtyname + '.image'
+    clean = cleanname + '.image'
+    resid = cleanname + '.residual'
+    pbmap = cleanname + '.pb'
+
+    newclean = cleanname + '.tweak.image'
+    newresid = cleanname + '.tweak.residual'
+
+    # Check if they exist
+    for f in [dirty,clean,resid,pbmap]:
+        ok = True
+        if not os.path.exists(f): 
+            ok = False
+            print "%s does not exist" % (f)
+    if not ok:
+        print "TP2VISTWEAK ERROR: need the above files"
+        return
+
+    for f in [newclean,newresid]:               # if output files
+        if os.path.exists(f):                   # already exist,
+            shutil.rmtree(f)                    # remove them
+    
+    # Temporary files
+    dirname = 'trash_tp2vistweak'               # temp directory for PSFs  
+    if not os.path.exists(dirname):             # if dir not exists
+        os.makedirs(dirname)                    # make fresh directory
+
+    dd = ''.join(re.findall('[0-9]',str(datetime.datetime.now())))
+    diff_dirty = dirname + '/image_diff_dirty_' + dd + '.im'
+    diff_clean = dirname + '/image_diff_clean_' + dd + '.im'
+
+    # Put missing header key in residual
+    imhead(resid,mode='put',hdkey='bunit',hdvalue='Jy/beam')
+
+
+    # Subtract residual from dirty and clean
+    # --------------------------------------
+    immath(imagename=[dirty,resid],expr='IM0-IM1',outfile=diff_dirty)
+    immath(imagename=[clean,resid],expr='IM0-IM1',outfile=diff_clean)
+
+
+    # Calculate sum
+    # -------------
+
+    apr = qa.convert('1.0rad','arcsec')['value'] # arcsec per radian
+    cbm = np.pi/(4.0*np.log(2.0))                # beamarea=cbm*bmaj*bmin
+
+    # Pixel size
+    dx_dirty,dy_dirty,dummy,dummy = imhead(diff_dirty)['incr'] * apr
+    dx_clean,dy_clean,dummy,dummy = imhead(diff_clean)['incr'] * apr
+
+    # Beam size
+    h0 = imhead(diff_dirty)
+    if 'perplanebeams' in h0:
+        bmaj_dirty=imhead(diff_dirty)['perplanebeams']['beams']['*0']['*0']['major']['value']
+        bmin_dirty=imhead(diff_dirty)['perplanebeams']['beams']['*0']['*0']['minor']['value']
+        bmaj_clean=imhead(diff_clean)['perplanebeams']['beams']['*0']['*0']['major']['value']
+        bmin_clean=imhead(diff_clean)['perplanebeams']['beams']['*0']['*0']['minor']['value']
+    else:
+        bmaj_dirty=imhead(diff_dirty)['restoringbeam']['major']['value']
+        bmin_dirty=imhead(diff_dirty)['restoringbeam']['minor']['value']
+        bmaj_clean=imhead(diff_clean)['restoringbeam']['major']['value']
+        bmin_clean=imhead(diff_clean)['restoringbeam']['minor']['value']
+        
+
+    # Sum over high PB area [omit (velwidth) multiplication for simplicity]
+    maskarea  = '\''+pbmap+'\'' + '>' +str(pbcut)           # CASA LEL friendly 
+    sum_dirty = imstat(diff_dirty,mask=maskarea)['sum'][0]
+    sum_clean = imstat(diff_clean,mask=maskarea)['sum'][0]
+    sum_dirty = sum_dirty * np.abs(dx_dirty*dy_dirty) / (cbm*bmaj_dirty*bmin_dirty)
+    sum_clean = sum_clean * np.abs(dx_clean*dy_clean) / (cbm*bmaj_clean*bmin_clean)
+
+
+    # Calculate beam ratio
+    #    Omega_clean/Omega_dirty = sum_dirty/sum_clean
+    # ------------------------------------------------
+
+    omegarat = sum_dirty/sum_clean
+
+    # Scale residual image and re-calculate cleaned image
+    # ---------------------------------------------------
+    immath(imagename=[resid],expr='IM0*'+str(omegarat),outfile=newresid)
+    immath(imagename=[diff_clean,newresid],expr='IM0+IM1',outfile=newclean)
+
+    # Print
+    # -----
+
+    print "\nTP2VISTWEAK: 'ImageExprCalculator::compute+' warning is harmless - ignore."
+    print "Stat: %8s %8s %10s %10s %10s" % \
+        ("Bmaj","Bmin","Sum(dirty)","Sum(clean)", "dirty/clean")
+    print "      %8.3f %8.3f %10.4f %10.4f %10.4f" % \
+        (bmaj_clean,bmin_clean,sum_dirty,sum_clean,omegarat)
+
+    print "Scale residual image %s - multiply %f" % (resid,omegarat)
+    print "     New residual image: %s" % (newresid)
+    print "Re-compute cleaned image"
+    print "     New clean image: %s" % (newclean)
+
+    return
+
+#-end of tp2vistweak()
+
 ## =================================
 ## TP2VISPL: Plot visibility weights
 ## =================================
 
-def tp2vispl(msTP=None, ms07=None, ms12=None, ampPlot=True, show=False):
+def tp2vispl(mslist, ampPlot=True, show=False, outfig='plot_tp2viswt.png'):
     """
     Plotting TP, 7m, and 12m MSs
 
     Parameters:
     -----------
     # need at least msTP
-    msTP      TP measurement set
-    ms07      07m measurement set
-    ms12      12m measurement set
-
+    mslist    list of measurement sets to plot
     ampPlot   True     amp-uvdistance plot
               False    weight-uvdistance plot
     show      True     plot in display as well as in file
               False    not plot in display, but in file
+    outfig    file name of output figure
     """
 
-    print "TP2VISPL: Plot MSs - Takes time."
+    print "TP2VISPL: Plot MSs - takes time for large data"
 
     # Parameters
     # ----------
 
-    # Parameters for plot
-    bin     = 0.5   # m
-    uvMax   = 150.0 # m
-    uvZoom  = 50.0  # m
-    outfig  = 'plot_tp2viswt.png'
+    bin     =   0.5                             # rad bin width for ave [meter]
+    uvMax   = 150.0                             # max uv for plot [meter]
+    uvZoom  =  50.0                             # max uv for zoom plot [meter]
 
-    # Generate MS list [order: 12m -> 7m -> TP]
-    mslist = []
-    clist  = [] # color for plot
-    if ms12 != None:
-        if type(ms12) != type([]): ms12 = [ms12]
-        for ims in ms12:
-            mslist.append(ims)
-            clist.append('b')
-    if ms07 != None:
-        if type(ms07) != type([]): ms07 = [ms07]
-        for ims in ms07:
-            mslist.append(ims)
-            clist.append('g')
-    if msTP != None:
-        if type(msTP) != type([]): msTP = [msTP]
-        for ims in msTP:
-            mslist.append(ims)
-            clist.append('r')
+    # Separate MSs and find 
+    # ---------------------
 
-    # Find the freq of max flux channel [preferably from msTP]
-    msfile = mslist[-1]
+    if type(mslist) != type([]): mslist = [mslist]
+    ms12   = []
+    ms07   = []
+    msTP   = []
+    clist  = []                                 # color for plot
+    for ims in mslist:
+        array = guessarray(ims)
+        if array   == 'ALMA12':
+            ms12.append(ims)
+            clist.append('b')                   # blue for 12m
+        elif array == 'ALMA07':
+            ms07.append(ims)
+            clist.append('g')                   # grean for 12m
+        elif array == 'VIRTUAL':
+            msTP.append(ims)
+            clist.append('r')                   # grean for 12m
+
+    # Open reference MS (preferably, TP) and obtain max flux channel
+    # --------------------------------------------------------------
+
+    if (msTP != []):                            # if MS for TP exists
+        msfile = msTP[0]                        # use it as freq reference
+    else:                                       # otherwise
+        msfile     = mslist[0]                  # use the first
+    ms.open(msfile)                             # open MS
+    ms.selectinit(reset=True)                   # all SPWs
+
     print "Pick up max flux channel in %s" % (msfile)
-    ms.open(msfile)
-    ms.selectinit(datadescid=0)
-    axinfo     = ms.getdata(['axis_info'])['axis_info']
-    ampsum     = ms.getdata(['amplitude'])['amplitude'][0,:,:].sum(1)
-    imaxchan   = ampsum.argmax(0)
-    targetfreq = axinfo['freq_axis']['chan_freq'][imaxchan][0]
+    cfreq  = ms.getdata('axis_info')['axis_info']['freq_axis']['chan_freq']
+                                                # (freq,spw)
+    cfreq  = np.transpose(cfreq[:,0]) / 1.0e9   # pick first spw
+    asum   = ms.getdata('amplitude')['amplitude'] # (pol,freq,vis)
+    asum   = asum.sum(axis=2).sum(axis=0)       # sum over vis & pol
+    maxc   = np.argmax(asum)                    # max flux channel
+    targetfreq = cfreq[maxc]                    # target freq for plot
     ms.close()
 
-    del ampsum
+    print "   (chan,freq) = (%d, %f GHz)" % (maxc,targetfreq)
 
-    # Start figure
-    plt.ioff()                    # no interactive mode
-    fig  = plt.figure()
-    axtl = fig.add_subplot(2,2,1) # Top-left
-    axtr = fig.add_subplot(2,2,2) # Top-right
-    axbr = fig.add_subplot(2,2,4) # Bot-right
-    axbl = fig.add_subplot(2,2,3) # Bot-left
+    del asum,maxc
+
+    # Setup figures
+    # -------------
+
+    plt.ioff()                                  # no interactive mode
+    fig  = plt.figure()                         # set canvas
+    axtl = fig.add_subplot(2,2,1)               # top-left
+    axtr = fig.add_subplot(2,2,2)               # top-right
+    axbr = fig.add_subplot(2,2,4)               # bottom-right
+    axbl = fig.add_subplot(2,2,3)               # bottom-left
 
     # Loop over MSs
     # -------------
     for ims in range(len(mslist)):
 
-        # Set up MSs
-        msfile = mslist[ims]
-        color  = clist[ims]
-        
-        # Read and calculate parameters
-        # -----------------------------
+        # Open MS and find SPWs that contain targetfreq
+        # ---------------------------------------------
+        msfile = mslist[ims]                    # this MS
+        color  = clist[ims]                     # plot color
+        iarray = guessarray(msfile)             # array name
+        fwhm0  = t2v_arrays[iarray]['fwhm100']  # FHWM at 100GHz [arcsec]
 
-        # Open MS and set constraints
-        ms.open(msfile,nomodify=True)
-        ms.selectinit(datadescid=0)
-        ms.select({'uvdist':[0.0,uvMax]})
+        ms.open(msfile,nomodify=True)           # open MS
 
-        # Read params
-        uu       = ms.getdata(['u'])['u'] # meter
-        vv       = ms.getdata(['v'])['v'] # meter
-        uvd      = ms.getdata(['uvdist'])['uvdist'] # meter
-        wt       = ms.getdata(['weight'])['weight'][0,:] # 1st pol
+        # Find SPWs that include targetfreq
+        ms.selectinit(reset=True)               # all spws
+        spwinfo  = ms.getspectralwindowinfo()   # spw info
+        spwlist  = []
+        for ispw in spwinfo.keys():             # loop over SPWs
+            nchan  = spwinfo[ispw]['NumChan']   # num of chan
+            c1freq = spwinfo[ispw]['Chan1Freq']/1.0e9  # 1st chan freq [GHz]
+            cwidth = spwinfo[ispw]['ChanWidth']/1.0e9  # chan width [GHz]
+            cfreq  = c1freq + np.arange(nchan)*cwidth  # chan freqs [GHz]
+            f0 = c1freq                         # first chan [GHz]
+            f1 = f0 + cwidth * nchan            # last chan [GHz]
+            if ((f0 - targetfreq)*(f1 - targetfreq)<0):# if incl. target freq
+                spwlist.append(ispw)            # append it
 
-        # Channel freq, width, and amplitude
-        axinfo   = ms.getdata(['axis_info'])['axis_info']
-        chanfreq = axinfo['freq_axis']['chan_freq']
-        chanwidt = axinfo['freq_axis']['resolution']
-        if ampPlot: # channel closest to target frequency
-            ichan = np.argmin(np.abs(chanfreq - targetfreq))
-            ms.selectchannel(1,ichan,1,1) # nchan,start,width,inc
-            amp   = ms.getdata(['amplitude'])['amplitude'][0,0,:] # 1st pol
-        else:       # middle channel
-            ichan = axinfo['freq_axis']['chan_freq'].size / 2
-        chanfreq = chanfreq[ichan][0]/1.0e9
-        chanwidt = chanwidt[ichan][0]/1.0e9
-        ms.close()
+        # Read data
+        # ---------
+        fid = np.array([])                      # field id
+        uu  = np.array([])                      # uu
+        vv  = np.array([])                      # vv
+        wt  = np.array([])                      # weight
+        amp = np.array([])                      # amplitude
 
-        # Weight in 1GHz width
-        wt       = wt / np.abs(chanwidt)
+        # Loop over SPWs
+        # --------------
+        for ispw in spwlist:
 
-        # print
-        print "%30s: (chan, freq, fwid, wtmax) = \
-            (%5d, %10.6f, %10.6f, %10.6f)" % \
-            (msfile,ichan,chanfreq,chanwidt,wt.max())
+            # SPW info and set constraints to reduce data to load
+            spwid  = spwinfo[ispw]['SpectralWindowId'] # SPW info
+            nchan  = spwinfo[ispw]['NumChan']   # num of chan
+            c1freq = spwinfo[ispw]['Chan1Freq']/1.0e9  # 1st chan freq [GHz]
+            cwidth = spwinfo[ispw]['ChanWidth']/1.0e9  # chan width [GHz]
+            cfreq  = c1freq + np.arange(nchan)*cwidth  # chan freqs [GHz]
+            fwhm   = fwhm0*(100.0/c1freq)/60.0  # FWHM at freq [arcmin]
+            barea  = np.pi*(fwhm/2.0)**2        # beam area [amin2]
+            ichan = np.argmin(np.abs(cfreq - targetfreq)) # closest to target
 
-        # Calculate avarages
-        uvbins = np.arange(0.0,uvd.max() + bin, bin)
-        digit  = np.digitize(uvd,uvbins)
-        uvarea = np.pi*np.diff(uvbins*uvbins)
-        wtbins = [wt[digit==i].sum() for i in range(1,len(uvbins))]
-        wtbins = wtbins/uvarea
-        uvbins = uvbins[1:]
+            # Limit data to load
+            ms.selectinit(datadescid=spwid)     # this SPW only
+            ms.select({'uvdist':[0.0,uvMax]})   # limit uv range
 
-        uvMax = np.maximum(uvMax,uvd.max())
+            # Read parameters [note: wt(pol,vis)]
+            fid    = np.append(fid,ms.getdata('field_id')['field_id'])
+            uu     = np.append(uu,ms.getdata('u')['u'],axis=0)  # meter
+            vv     = np.append(vv,ms.getdata('v')['v'],axis=0)  # meter
+            npnt   = len(np.unique(ms.getdata('field_id')['field_id']))
+            wtemp  = ms.getdata('weight')['weight'].sum(axis=0) # sum pol
+            wtemp  = wtemp/npnt/barea/np.abs(cwidth)            # /pnt/amin2/GHz
+
+            # Append
+            wt = np.append(wt, wtemp,axis=0)
+
+            # Amplitude
+            if ampPlot:                         # if plot amp
+                ms.selectchannel(1,ichan,1,1)   # nchan,start,width,inc
+                amp0  = ms.getdata('amplitude')['amplitude'].mean(axis=(0,1))
+                                                # ave for pol, spw
+                amp   = np.append(amp,amp0)     # append
+
+            del wtemp, amp0
+
+            # print
+            print "%30s: (spw,chan,freq,fwid) = (%3d, %5d, %10.6f, %10.6f)" \
+                % (msfile,spwid,ichan,cfreq[ichan],cwidth)
+
+        ms.close()                              # Close MS
+
+        # Remove data with zero weights and calc params
+        # ---------------------------------------------
+
+        idx = wt > 0.0
+        uu  = uu[idx]
+        vv  = vv[idx]
+        wt  = wt[idx]
+        if ampPlot: amp = amp[idx]
+
+        uvdist   = np.sqrt(uu*uu + vv*vv)       # uv distance
+        fid      = np.unique(fid)               # unique field ids
+        nfid     = fid.size                     # num of fields/pointings
+
+        # Calculate averages in bins
+        # --------------------------
+
+        uvbins   = np.arange(0.0,uvdist.max() + bin, bin)
+        digit    = np.digitize(uvdist,uvbins)
+        uvarea   = np.pi*np.diff(uvbins*uvbins)
+        wtbins   = [wt[digit==i].sum() for i in range(1,len(uvbins))]
+        wtbins   = wtbins/uvarea
+        uvbins   = uvbins[1:]
+        wtbins   = wtbins/nfid                  # per pointing
 
         del digit, uvarea
 
         # Plot
         # ----
 
-        # Top-left:     UU     vs VV
+        # Top-left: uu vs vv
         axtl.scatter( uu, vv,marker='.',s=0.2,c=color,lw=0)
         axtl.scatter(-uu,-vv,marker='.',s=0.2,c=color,lw=0)
-        # Top-right:    UVdist vs Amplitude or Weight [Zoom-up]
+
+        # Top-right: uvdist vs amplitude or weight [Zoom-up]
         if ampPlot:
-            axtr.scatter(uvd,amp,marker='.',s=0.2,c=color,lw=0)
+            axtr.scatter(uvdist,amp,marker='.',s=0.2,c=color,lw=0)
         else:
-            axtr.scatter(uvd,wt,marker='.',s=0.2,c=color,lw=0)
-        # Bottom-right: UVdist vs WTdens [Zoom-up]
+            axtr.scatter(uvdist,wt,marker='.',s=0.2,c=color,lw=0)
+
+        # Bottom-right: uvdist vs wtdens [zoom-up]
         axbr.plot(uvbins,wtbins,c=color,drawstyle='steps-mid')
-        # Bottom-left:  UVdist vs WTdens
+
+        # Bottom-left: uvdist vs wtdens
         axbl.plot(uvbins,wtbins,c=color,drawstyle='steps-mid',label=ms)
 
-        del uu,vv,uvd,wt,uvbins,wtbins
+        del uu,vv,uvdist,wt,uvbins,wtbins
 
-    # Cosmetics
-    # ---------
+    # Plot frames, scales, etc
+    # ------------------------
     fontsize=10
 
-    # Top-left
-    axtl.set_aspect(1.0)
+    axtl.set_aspect(1.0)                        # top-left
     axtl.set_xlim(-uvZoom, uvZoom)
     axtl.set_ylim(-uvZoom, uvZoom)
     axtl.set_xlabel("u (meter)",fontsize=fontsize)
     axtl.set_ylabel("v (meter)",fontsize=fontsize)
     axtl.tick_params(axis='both',which='major',labelsize=fontsize)
-    # Top-right
-    axtr.set_xlim(0.0, uvZoom)
+
+    axtr.set_xlim(0.0, uvZoom)                  # top-right
     axtr.set_xlabel("uvdistance (meter)",fontsize=fontsize)
     if ampPlot:
-        axtr.set_ylim(0.0, 20.0)
         axtr.set_ylabel("amplitude",fontsize=fontsize)
     else:
         axtr.set_ylabel("weight [per visibility]",fontsize=fontsize)
     axtr.tick_params(axis='both',which='major',labelsize=fontsize)
-    # Bottom-right
-    axbr.set_xlim(0.0,uvZoom)
+
+    axbr.set_xlim(0.0,uvZoom)                   # bottom-right
     axbr.set_yscale('log')
     axbr.set_xlabel("uvdistance (meter)",fontsize=fontsize)
-    axbr.set_ylabel("weight density [BW=1GHz]",fontsize=fontsize)
+    axbr.set_ylabel("weight density [/GHz/pnt/arcmin2]",fontsize=fontsize)
     axbr.tick_params(axis='both',which='major',labelsize=fontsize)
-    # Bottom-left
-    axbl.set_xlim(0.0, uvMax)
+
+    axbl.set_xlim(0.0, uvMax)                   # bottom-left
     axbl.set_yscale('log')
     axbl.set_xlabel("uvdistance (meter)",fontsize=fontsize)
-    axbl.set_ylabel("weight density [BW=1GHz]",fontsize=fontsize)
+    axbl.set_ylabel("weight density [/GHz/pnt/arcmin2]",fontsize=fontsize)
     axbl.tick_params(axis='both',which='major',labelsize=fontsize)
 
     # Legend [conflict with the MS functions of CASA Toolkit]
 #    axtr.legend(loc=1,prop={'size':'x-small'})
 
     # Draw
+    # ----
     plt.savefig(outfig)
     print "Output fig in %s" % (outfig)
     if (show):
         plt.show()
     else:
-        plt.close(fig)
+        plt.close('all')
 
     #-end of tp2vispl()

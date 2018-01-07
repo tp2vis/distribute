@@ -1,34 +1,30 @@
 # tp2vis
 Total Power to Visibilities (TP2VIS): an ALMA Development Study (2016/17)
 
-This project provides tools to create visibilities from a single dish cube using the method
-of [Koda et al. 2011](http://adsabs.harvard.edu/abs/2011ApJS..193...19K).
-The TP visibilities can then be combined with the interferometric visibilities in
-a joint deconvolution using for example CASA's
-[**tclean()**](https://casa.nrao.edu/casadocs/casa-5.0.0/global-task-list/task_tclean/about)
-method.
-TP2VIS requires **CASA 5 or above.**
+Jin Koda, Peter Teuben, Adele Plunkett, Tsuyoshi Sawada, Crystal Brogan, Ed Formalont
+
+This project provides tools to create visibilities from a single dish cube using the method of [Koda et al. 2011](http://adsabs.harvard.edu/abs/2011ApJS..193...19K).
+The TP visibilities can then be combined with the interferometric visibilities in a joint deconvolution using for example CASA's [**tclean()**](https://casa.nrao.edu/casadocs/latest/global-task-list/task_tclean/about) method.
+TP2VIS requires **CASA 5 or above** and as powerful a computer as what the CASA Feather guide requires.
 
 Our github repo for distribution : https://github.com/tp2vis/distribute
 
-Efforts behind the scenes will be released (coming soon): https://kodajn.github.io/tp2vis
 
+## Release note
 
-## Release Schedule
-
-The current beta release is for experts with experience on interferometer data reduction with CASA. We seek feedback from the experts for further development. Release to non-experts is planned in future.
+The current beta release is for experts with experience on interferometer data reduction with CASA. We seek feedback from the experts for improvements. It has been working science-ready for our team, and we want to know if it works for you. Release to non-experts is planned in future.
 
 ## Download
 
-Click "Clone or download" on [top page](https://github.com/tp2vis/distribute) for download options, or 
+Click "Clone or download" on [top page](https://github.com/tp2vis/distribute) for download options, or run
 
        git clone git@github.com:tp2vis/distribute
 
-Only one file "tp2vis.py" is needed.
+You need only one script "tp2vis.py".
 
 ## Usage
 
-To give you a quick idea how to run TP2VIS, here are the basic commands in CASA, broken into 5 pieces. Examples are listed below.
+To give you a quick idea how to run TP2VIS, here are the basic flow of commands in CASA, broken into 5 pieces. This document gives an overall flow, but look at examples listed below for more info.
 
 
 ### 1. Preparations:
@@ -59,13 +55,12 @@ to use the first 10 channels of your TP cube
 
 #### 1.3: Cutting down the MS dataset sizes.
 
+Cut down unnecessary spws from measurement sets as tp2vis assumes all spws to be used for imaging.
 CASA tasks such as
-[**split()**](https://casa.nrao.edu/casadocs/casa-5.0.0/global-task-list/task_split/about)
+[**split()**](https://casa.nrao.edu/casadocs/latest/global-task-list/task_split/about)
 and
-[**mstransform()**](https://casa.nrao.edu/casadocs/casa-5.0.0/global-task-list/task_mstransform/about)
-can be very useful to cut down the size
-of a measurement set before using it in tclean, including a spectral gridding.
-There are a number of examples in the workflows linked below.
+[**mstransform()**](https://casa.nrao.edu/casadocs/latest/global-task-list/task_mstransform/about)
+can be useful.
 
 
 ### 2. Load and run TP2VIS:
@@ -74,30 +69,40 @@ There are a number of examples in the workflows linked below.
 
        tp2vis('tp.im','tp.ms','12m.ptg',rms=0.67)                     # make visibilities
 
-### 3. Expert mode Weighting Schemes (optional)
+### 3. [optional] Expert mode Weighting Schemes
 
        tp2viswt('tp.ms', ...)                                         # set weights
-       tp2vispl(msTP='tp.ms')                                         # (optional) plot weights
+       tp2vispl(['12m.ms','7m.ms','tp.ms'])                           # (optional) plot weights
 
-A practical weighting scheme is under investigation. For now "tp2viswt" provides functions to manipulate weights. There are a number of modes how you can set weight, described in [example1](example1.md).
+"tp2viswt" shows weight statistics and manipulates weights. There are several modes how you can set weight, described in [example1](example1.md). "tp2vispl" plots the weights.
 
-### 4. Some CASA workarounds to get files on a common velocity grid
+### 4. Some CASA workarounds to get files recognized properly
 
-Currently we are suffering from CASA crashing when **tclean()** uses a list of MS files that included
-the TPMS, so we need to
-[**concat()**](https://casa.nrao.edu/casadocs/casa-5.0.0/global-task-list/task_concat/about)
+Currently we are suffering from CASA crashing when **tclean()** uses a list of MS files that included the TP MS, so we need to
+[**concat()**](https://casa.nrao.edu/casadocs/latest/global-task-list/task_concat/about)
 them.
 
-       concat(vis=['12m.ms','7m.ms','tp.ms'], concatvis='all.ms',copypointing=False)  # also ignore POINTING
+       concat(vis=['12m.ms','7m.ms','tp.ms'], concatvis='all.ms',copypointing=False)
 
-The "copypointing=False" option is important.
+The "copypointing=False" option is important. No worries, important pointing info still remain in 'all.ms' (one of CASA mysteries!).
 
 ### 5. finally the joint deconvolution using CASA's ``tclean()``
 
-       tclean(vis='all.ms', imagename='all', ...)                     # run clean the way you like it
+       tclean(vis='all.ms', imagename='all_clean', ...)                     # run clean the way you like it
 
 Where ... represents the large number of options to control the deconvolution. For example, users may try "robust" and "uvtaper" options.
 
+Make dirty images as well
+
+       tclean(vis='all.ms', imagename='all_dirty', niter=0, ...)                     # make dirty map
+
+### (6) [optional] Correction for beam size mismatch
+
+Once dirty and cleaned images are generated, one may correct for the discrepancy between dirty and clean/restore beam areas (see [**Jorsater and van Moorsel 1995**](http://adsabs.harvard.edu/abs/1995AJ....110.2037J)).
+
+       tp2vistweak('all_dirty','all_clean')                   # adjust dirty beam size in residual image
+
+It creates ``.tweak.image`` and ``.tweak.residual``, which have a correct flux scale.
 
 ## Examples
 
@@ -108,13 +113,6 @@ Where ... represents the large number of options to control the deconvolution. F
 * Koda et al. 2011, ApJS, 193, 19 : http://adsabs.harvard.edu/abs/2011ApJS..193...19K
 
 * CASA reference manual and cookbook : http://casa.nrao.edu/docs/cookbook/
-  * Measurment Set: https://casa.nrao.edu/casadocs/casa-5.0.0/reference-material/measurement-set
-  * MS V2 document: [MS v2 memo](https://casa.nrao.edu/casadocs/casa-5.0.0/reference-material/229-1.ps/@@download/file/229.ps)
-* CASA simulations: https://casa.nrao.edu/casadocs/casa-5.0.0/simulation
-  * Simulations (in 4.4) https://casaguides.nrao.edu/index.php/Simulating_Observations_in_CASA_4.4
-  * See also our workflow4 below
-* CASA single dish imaging:  https://casa.nrao.edu/casadocs/casa-5.0.0/single-dish-imaging
-* CASA feather: https://casa.nrao.edu/casadocs/casa-5.0.0/image-combination/feather
-* Nordic Tools SD2VIS: https://www.oso.nordic-alma.se/software-tools.php
-* CASA data weights and combination:  https://casaguides.nrao.edu/index.php/DataWeightsAndCombination
-* Kauffman's *Adding Zero-Spacing* workflow: https://sites.google.com/site/jenskauffmann/research-notes/adding-zero-spa
+  * Measurement Set: https://casa.nrao.edu/casadocs/latest/reference-material/measurement-set
+
+* Jorsater and van Moorsel 1995, AJ, 110, 2037 : http://adsabs.harvard.edu/abs/1995AJ....110.2037J
