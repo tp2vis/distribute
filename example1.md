@@ -33,12 +33,13 @@ and in CASA:
 
 Cut down unnecessary spws from measurement sets as tp2vis assumes all spws in MSs to be used for imaging.
 
-Make a 7m+12m dirty map for comparison later and check it
+Make a 7m+12m dirty and clean map for comparison later and check it
 
     tclean(vis=['M100_12m_CO.ms','M100_7m_CO.ms'],imagename='M100_07m12m_CO_dirty', niter=0,gridder='mosaic',imsize=800,cell='0.5arcsec',phasecenter='J2000 12h22m54.9 +15d49m15',weighting='natural',threshold='0mJy',specmode='cube',outframe='LSRK',restfreq='115.271201800GHz',nchan=70,start='1400km/s',width='5km/s')
 
-    imview(raster=[{'file': 'M100_07m12m_CO_dirty.image'}],zoom={'channel':23,'blc': [200,200], 'trc': [600,600]})
-    imview(raster=[{'file': 'M100_07m12m_CO_dirty.image'}],zoom={'channel':47,'blc': [200,200], 'trc': [600,600]})
+    tclean(vis=['M100_12m_CO.ms','M100_7m_CO.ms'],imagename='M100_07m12m_CO_clean', niter=10000,gridder='mosaic',imsize=800,cell='0.5arcsec',phasecenter='J2000 12h22m54.9 +15d49m15',weighting='natural',threshold='0mJy',specmode='cube',outframe='LSRK',restfreq='115.271201800GHz',nchan=70,start='1400km/s',width='5km/s')
+
+Check the maps, e.g., with "viewer", "imview", etc.
 
 ### In what follows, we need
 
@@ -70,28 +71,35 @@ Use, e.g., first 6 channels to measure RMS in this example.
 
 "nvgrp=" controls the number of visibilities generated (i.e., # of vis = 1035*nvgrp).
 
-### (4) Concat TP, 7m, and 12m measurement sets and run tclean to make dirty map
+### (4) Concat TP, 7m, and 12m measurement sets and run tclean to make dirty & clean maps
 
 Currently, tclean cannot deal with a list of MSs including the one from tp2vis. But after concat, it works:
 
-    concat(vis=['M100_TP_CO.ms','M100_7m_CO.ms','M100_12m_CO.ms'],concatvis='test_TP07m12m.ms',copypointing=False)
+    concat(vis=['M100_TP_CO.ms','M100_7m_CO.ms','M100_12m_CO.ms'],concatvis='M100_TP07m12m_CO.ms',copypointing=False)
 
-    tclean(vis='test_TP07m12m.ms',imagename='M100_TP07m12m_CO_dirty', niter=0,gridder='mosaic',imsize=800,cell='0.5arcsec',phasecenter='J2000 12h22m54.9 +15d49m15',weighting='natural',threshold='0mJy',specmode='cube',outframe='LSRK',restfreq='115.271201800GHz',nchan=70,start='1400km/s',width='5km/s')
+Run tclean to generate dirty and clean maps. For step (6), we run the same tclean with "niter=0" for dirty map.
 
-You may see some error messages from CASA from concat and tclean, but they appear to be bugs in those CASA tasks, so ignore.
+    tclean(vis='M100_TP07m12m_CO.ms',imagename='M100_TP07m12m_CO_dirty', niter=0,gridder='mosaic',imsize=800,cell='0.5arcsec',phasecenter='J2000 12h22m54.9 +15d49m15',weighting='natural',threshold='0mJy',specmode='cube',outframe='LSRK',restfreq='115.271201800GHz',nchan=70,start='1400km/s',width='5km/s')
 
-Look at the combined dirty map.
+    tclean(vis='M100_TP07m12m_CO.ms',imagename='M100_TP07m12m_CO_clean', niter=10000,gridder='mosaic',imsize=800,cell='0.5arcsec',phasecenter='J2000 12h22m54.9 +15d49m15',weighting='natural',threshold='0mJy',specmode='cube',outframe='LSRK',restfreq='115.271201800GHz',nchan=70,start='1400km/s',width='5km/s')
 
-    imview(raster=[{'file': 'M100_TP07m12m_CO_dirty.image'}],zoom={'channel':23,'blc': [200,200], 'trc': [600,600]})
-    imview(raster=[{'file': 'M100_TP07m12m_CO_dirty.image'}],zoom={'channel':47,'blc': [200,200], 'trc': [600,600]})
+You may see some warning messages from CASA from concat and tclean, but they appear to be bugs in those CASA tasks, so ignore.
 
-It worked, but compared to 12m+7m dirty maps, the effect of TP is not immediately clear to eyes. To check, subtract 12m+7m dirty map from 12m+7m+TP dirty map:
+Check the maps, e.g., with "viewer", "imview", etc.
+
+It worked, but compared to 7m+12m DIRTY maps, the effect of TP is not immediately clear to eyes in TP+7m+12m DIRTY maps. To check, subtract 12m+7m dirty map from 12m+7m+TP dirty map:
 
     immath(imagename=['M100_TP07m12m_CO_dirty.image','M100_07m12m_CO_dirty.image'],expr='IM0-IM1',outfile='difference.im')
 
 Use "viewer", "imview", etc, to check. You should see something like the original TP map if the TP visibilities from tp2vis are properly included.
 
-If not satisfied with this combined 12m+7m+TP dirty map, adjust WEIGHT in (*4) and come back to (4). Do this iteratively until you are satisfied.
+Here is a comparison of 7m+12m clean map and TP+7m+12m clean map
+
+![plot1](figures/M100_07m12m_TP07m12m_clean.png)
+
+The negative sidelobes disappeared. If you are satisfied with this, try robust or uniform weightings in tclean to optimize images for your science.
+
+If not satisfied with this combined 12m+7m+TP map, adjust WEIGHT in (*4) and come back to (4). Do this iteratively until you are satisfied.
 
 
 ### (*4) [Optional] Adjust WEIGHT
@@ -100,7 +108,7 @@ tp2vis() has set the WEIGHT to an RMS-based one. If you are a first time user or
 
 Here we show how to manipulate WEIGHT for those who want more control.
 
-Note that historically radio interferometrists have been arbitrarily adjusting WEIGHT using, e.g., natural, uniform, or robust weightings. What's here is in the same vein.
+Note that historically radio interferometrists have been arbitrarily adjusting WEIGHT using, e.g., natural, uniform, or weightings robust (briggs). What's here is in the same vein.
 
 First, compare WEIGHT in TP and 12m, 7m visibilities. "mode='stat'" in tp2viswt gives some statistics of WEIGHT.
 
@@ -126,11 +134,11 @@ M100_7m_CO.ms has two SPWs, so two entries.
 
 Relative WEIGHT can be plotted:
 
-    tp2vispl(['M100_TP_CO.ms','M100_7m_CO.ms','M100_12m_CO.ms'],outfig="plot_tp2viswt.png")
+    tp2vispl(['M100_TP_CO.ms','M100_7m_CO.ms','M100_12m_CO.ms'],outfig="plot_tp2viswt_rms.png")
 
-Open "plot_tp2viswt.png". It shows WEIGHT densities of TP (red), 7m (green), and 12m (blue). They are smoothly connected as a function of uv distance, so good.
+Open "plot_tp2viswt_rms.png". It shows WEIGHT densities of TP (red), 7m (green), and 12m (blue). They are smoothly connected as a function of uv distance, so good.
 
-![plot1](figures/M100.tp2viswt.png)
+![plot1](figures/M100_tp2viswt_rms.png)
 
 
 The following may be useful if you want to change the WEIGHT, e.g., to put more emphasis on extended emission.
@@ -156,36 +164,21 @@ Feel free to pick any WEIGHT you like. tclean() gives a correct result as it gen
 
 ### Go back to (4)
 
-Concat and tclean
 
-    concat(vis=['M100_TP_CO.ms','M100_7m_CO.ms','M100_12m_CO.ms'],concatvis='test_TP07m12m_WT.ms')
-    tclean(vis='test_TP07m12m_WT.ms',imagename='M100_TP07m12m_WT_CO_dirty', niter=0,gridder='mosaic',imsize=800,cell='0.5arcsec',phasecenter='J2000 12h22m54.9 +15d49m15',weighting='natural',threshold='0mJy',specmode='cube',outframe='LSRK',restfreq='115.271201800GHz',nchan=70,start='1400km/s',width='5km/s')
-
-    imview (raster=[{'file': 'M100_TP07m12m_WT_CO_dirty.image'}],zoom={'channel':23,'blc': [200,200], 'trc': [600,600]})
-    imview (raster=[{'file': 'M100_TP07m12m_WT_CO_dirty.image'}],zoom={'channel':47,'blc': [200,200], 'trc': [600,600]})
-
-The final DIRTY map looks good.
-
-
-Two channels: 12m+7m dirty maps and 12m+7m+TP dirty maps
-
-![plot1](figures/M100.v1515.gif)
-
-![plot1](figures/M100.v1635.gif)
-
-
-### (5) Run tclean
+### (5) Run tclean with "weighting=" and/or "robust=".
 
 Run tclean as you like. Play around with "weighting=" and "robust=". Here, as an example, we run:
 
-    tclean(vis='test_TP07m12m.ms',imagename='M100_TP07m12m_CO_clean', niter=10000,gridder='mosaic',imsize=800,cell='0.5arcsec',phasecenter='J2000 12h22m54.9 +15d49m15',weighting='natural',threshold='0mJy',specmode='cube',outframe='LSRK',restfreq='115.271201800GHz',nchan=70,start='1400km/s',width='5km/s')
+    tclean(vis='M100_TP07m12m_CO.ms',imagename='M100_TP07m12m_CO_clean',niter=10000,gridder='mosaic',imsize=800,cell='0.5arcsec',phasecenter='J2000 12h22m54.9 +15d49m15',weighting='natural',threshold='0mJy',specmode='cube',outframe='LSRK',restfreq='115.271201800GHz',nchan=70,start='1400km/s',width='5km/s')
 
 For the next optional step, you may run the same tclean, but with "niter=0" for dirty map.
 
+    tclean(vis='M100_TP07m12m_CO.ms',imagename='M100_TP07m12m_CO_dirty',niter=0,gridder='mosaic',imsize=800,cell='0.5arcsec',phasecenter='J2000 12h22m54.9 +15d49m15',weighting='natural',threshold='0mJy',specmode='cube',outframe='LSRK',restfreq='115.271201800GHz',nchan=70,start='1400km/s',width='5km/s')
 
-### (6) [Optional] Correction for beam size mismatch
 
-This step is beyond the scope of TP2VIS, but may be useful.
+### (6) Correction for beam size mismatch
+
+This step is not within the original scope of TP2VIS, but may be useful.
 
 Note that (cleaned map) = (clean component map) + (residual map). The last two maps have different units of flux densities: Jy/(clean beam) vs Jy/(dirty beam). Unfortunately, the clean beam and dirty beam are not guaranteed to have the same area, which causes a problem in flux calculation (see [Jorsater and van Moorsel 1995](http://adsabs.harvard.edu/abs/1995AJ....110.2037J); [Koda et al. 2011](http://adsabs.harvard.edu/abs/2011ApJS..193...19K)).
 

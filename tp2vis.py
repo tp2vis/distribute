@@ -21,6 +21,8 @@
 import os, sys, shutil, re, time, datetime
 import numpy as np
 import matplotlib.pyplot as plt
+import pyfits
+from scipy.ndimage import distance_transform_edt
 
 ## ===========================================
 ## Global parameters: observatory & telescopes
@@ -81,7 +83,7 @@ t2v_arrays['VIRTUAL']    = apara.copy()
 ## =================
     
 def tp2vis_version():
-    print "06-jan-2018"
+    print "7-feb-2018"
 
    
 def axinorder(image):
@@ -116,7 +118,9 @@ def arangeax(image):
         axinorder() is already run and 4 axes exist in order.
         Helper function for tp2vis()    
     """
-    imageout = image + 'tmp_trans_' 
+
+    dd = ''.join(re.findall('[0-9]',str(datetime.datetime.now())))
+    imageout = 'tmp_arangeax_' + dd + '.im'
     os.system('rm -rf %s' % imageout)
     ia.open(image)
     h0 = ia.summary()
@@ -191,7 +195,7 @@ def guessarray(msfile):
 ## TP2VIS: main function to convert TP cube into visibilities
 ## ==========================================================
 
-def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
+def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True, winpix=0):
     """
     Required:
     ---------
@@ -215,7 +219,8 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
               The number of antenna is hardcoded as 46
     deconv    Use deconvolution as input model (True) -
               almost never want to change this - useful for Jy/pixel maps
-
+    winpix    Width of the Tukey window to reduce aliasing [=0 for no window],
+              Number of pixels from each edge
     """
 
     # CASA bug fixes
@@ -310,21 +315,19 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
     print "Number of pixels per beam:",nppb
 
     # Cutoff length of TP's gaussian beam tail
-    eps    = 0.001                              # cutoff amp of gauss tail
+    eps    = 0.01                               # cutoff amp of gauss tail
     uvcut  = np.sqrt(-2.0*tp_beamSigFT**2*np.log(eps)) # uvdist there
     uvcut  = np.minimum(maxuv/cb_refwave,uvcut) # compare with maxuv
     print "UVCUT:", uvcut/1000.0,"kLambda"
 
-    # Generate uvdist^2 image
+    # Generate uvdist^2 image [notice: x-axis runs vertically] 
     du        = 1.0/(cb_nx*cb_dx)               # pixel sizes in u,v
     dv        = 1.0/(cb_ny*cb_dy)
-    ugrd,vgrd = np.meshgrid(np.arange(cb_ny),np.arange(cb_nx)) # make grid
+    vgrd,ugrd = np.meshgrid(np.arange(cb_ny),np.arange(cb_nx)) # make grid
     ugrd      = (ugrd-0.5*(cb_nx-1.0))*du       # [-uspan/2,+uspan/2]
     vgrd      = (vgrd-0.5*(cb_ny-1.0))*dv       # [-vspan/2,+vspan/2]
     uvgrd2    = ugrd**2+vgrd**2                 # uvdist^2 image
     uvgrd2    = np.fft.fftshift(uvgrd2)         # shift peak to corner
-
-    del ugrd,vgrd
 
     # Open TP cube
     ia.open(imagename)
@@ -333,7 +336,8 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
     if not deconv:
         imagedecname = ''
     else:
-        imagedecname = 'tmp_imagedec.im'
+        dd = ''.join(re.findall('[0-9]',str(datetime.datetime.now())))
+        imagedecname = 'tmp_imagedec_' + dd + '.im'
         ia2 = ia.newimagefromimage(imagename,imagedecname,overwrite=True)
 
         # Loop over channels
@@ -347,26 +351,42 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
 
             # Channel image to be deconvolved
             image     = ia.getchunk([-1,-1,-1,iz],[-1,-1,-1,iz])
-                                                          # image[ix][iy][0][0]
+            image     = image[:,:,0,0]                    # image[ix][iy][0][0]
             image     = image / nppb                      # scale to Jy/pixel
-            imageFT   = np.fft.fft2(image,axes=(0,1))
-            nnx       = imageFT.shape[0]
-            nny       = imageFT.shape[1]
-            imageFT   = imageFT.reshape((nnx,nny))        # remove 3rd & 4th ax
+
+            # Apply Tukey window
+            if (winpix > 0):
+                nwin      = winpix
+                mask      = ia.getchunk([-1,-1,-1,iz],[-1,-1,-1,iz],getmask=True)
+                mask      = mask[:,:,0,0]                 # mask[ix][iy][0,0]
+                nnx       = mask.shape[0]
+                nny       = mask.shape[1]
+                maskexp   = np.zeros([nnx+2,nny+2])       # add 1pix each edge
+                maskexp[1:nnx+1,1:nny+1] = mask           # edge = 0 (blank)
+                dist = distance_transform_edt(maskexp)-1. # dist. from blanks
+                dist[dist<0]     = 0                      # outside/blanks=0
+                dist[dist>nwin]  = nwin                   # deep inside=nwin
+                dist      = dist/nwin                     # normalize to [0,1]
+                dist      = dist[1:nnx+1,1:nny+1]         # trim the expansion
+                mask      = 0.5*(1.0-np.cos(np.pi*dist))  # Tukey window
+                image     = image * mask                  # apply
+
+                del dist,mask
 
             # Deconvolution 
+            imageFT   = np.fft.fft2(image,axes=(0,1))
             imageFTdec       = imageFT.copy()
             idx0             = (uvgrd2   > (uvcut**2))    # idx of outer uv
             idx1             = np.logical_not(idx0)       # idx of inner uv
             imageFTdec[idx1] = imageFT[idx1]/beamFT[idx1] # just for inner uv
             imageFTdec[idx0] = 0.0                        # set outer uv zero
             imagedec         = np.fft.ifft2(imageFTdec)
-            ia2.putchunk(abs(imagedec), blc=[0,0,0,iz])
+            ia2.putchunk(np.real(imagedec), blc=[0,0,0,iz])
 
-        print "Done. nnx,nny=",nnx,nny
         ia2.close()            
 
     ia.close()
+
 
     # List parameters for virtual interferometric obs
     # ===============================================
@@ -645,7 +665,7 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
                 restfreq = h0['crval4'] * 1.0e9
 
         print "SET RESTFREQ:::",restfreq/1e9," GHz"
-        print "   Set restfreq option in (t)clean if this restfreq is incorrect"
+        print "   Set restfreq= in (t)clean manually if this restfreq is incorrect"
 
         tb.open(outfile + '/SOURCE',nomodify=False)
         rf = tb.getcol('REST_FREQUENCY')
@@ -669,7 +689,7 @@ def tp2vis(infile, outfile, ptg, maxuv=10.0, rms=None, nvgrp=4, deconv=True):
 ## TP2VISWT: Explore different weights for TP visibilities
 ## =======================================================
            
-def tp2viswt(mslist, value=1.0, mode='statistics',makepsf=True):
+def tp2viswt(mslist, value=1.0, mode='statistics', makepsf=True):
     """
 
     Parameters
@@ -901,7 +921,7 @@ def tp2viswt(mslist, value=1.0, mode='statistics',makepsf=True):
         dd = ''.join(re.findall('[0-9]',str(datetime.datetime.now())))
         baseTP   = 'tmp_msTP_' + dd                 # base name of TP images
         baseINT  = 'tmp_msINT_'+ dd                 # base name of INT images
-        dirname  = 'trash_tp2viswt'                 # temp directory for PSFs
+        dirname  = 'tmp_tp2viswt'                   # temp directory for PSFs
 
         if (makepsf):
             if not os.path.exists(dirname):         # if dir not exists
@@ -933,29 +953,29 @@ def tp2viswt(mslist, value=1.0, mode='statistics',makepsf=True):
         # Calculate BETA - the ratio of INT and TP weights
         # ================================================
 
-        # calculate Omega_conv
-        # --------------------
+        # Calculate Omega_clean
+        # ---------------------
 
-        beam_int   = imhead(dirname+'/'+baseINT+'.psf')['restoringbeam']
-        bmaj_int   = qa.convert(beam_int['major'],'rad')['value'] # radian
-        bmin_int   = qa.convert(beam_int['minor'],'rad')['value'] # radian
-        omega_conv = np.pi/(4*np.log(2.0)) * bmaj_int*bmin_int
+        beam_int    = imhead(dirname+'/'+baseINT+'.psf')['restoringbeam']
+        bmaj_int    = qa.convert(beam_int['major'],'rad')['value'] # radian
+        bmin_int    = qa.convert(beam_int['minor'],'rad')['value'] # radian
+        omega_clean = np.pi/(4*np.log(2.0)) * bmaj_int*bmin_int
 
-        # Calculate Omega_syn [= W_TP(0,0) = Omega_TP]
-        # --------------------------------------------
+        # Calculate Omega_TP [= W_TP(0,0)]
+        # --------------------------------
 
-        beam_tp    = imhead(dirname+'/'+baseTP+'.psf')['restoringbeam']
-        bmaj_tp    = qa.convert(beam_tp['major'],'rad')['value'] # radian
-        bmin_tp    = qa.convert(beam_tp['minor'],'rad')['value'] # radian
-        omega_syn  = np.pi/(4*np.log(2.0)) * bmaj_tp *bmin_tp
+        beam_tp     = imhead(dirname+'/'+baseTP+'.psf')['restoringbeam']
+        bmaj_tp     = qa.convert(beam_tp['major'],'rad')['value'] # radian
+        bmin_tp     = qa.convert(beam_tp['minor'],'rad')['value'] # radian
+        omega_tp    = np.pi/(4*np.log(2.0)) * bmaj_tp *bmin_tp
 
         # Derive beta
-        #   omega_syn  = beta/(1+beta)*W_TP(0,0)
-        # --------------------------------------
-        beta = omega_conv / (omega_syn - omega_conv)
+        #   omega_syn  = omega_TP  = beta/(1+beta)*W_TP(0,0)
+        # --------------------------------------------------
+        beta = omega_clean / (omega_tp - omega_clean)
 
-        print "Omega_conv [strad] = ",omega_conv
-        print "Omega_syn  [strad] = ",omega_syn 
+        print "Omega_clean [strad] = ",omega_clean
+        print "Omega_TP    [strad] = ",omega_tp
         print "Beta               = ",beta
     
         if beta < 0:
@@ -1053,27 +1073,33 @@ def tp2viswt(mslist, value=1.0, mode='statistics',makepsf=True):
 ## TP2VISTWEAK: Adjust beam size after (t)clean
 ## ============================================
 
-def tp2vistweak(dirtyname,cleanname,pbcut=0.8):
+def tp2vistweak(dirtyname, cleanname, pbcut=0.8):
     """
-    Mismatch of dirty and clean/restore beam areas becomes noticable in
-    TP+INT joint-deconvolution. This task compares the two beam areas,
-    rescales flux density in residual map, and re-calculates cleaned map.
+    Mismatch of dirty and clean/restore beam areas become noticable in
+    TP+INT joint-deconvolution. This function compares the two beam areas,
+    rescales the flux density in residual map, and re-calculates the cleaned map.
 
     Note the mismatch problem exists even for INT alone, but without TP,
     the true flux is not known, so the problem is not noticable.
 
-
     Parameters
     -----------
-    dirtyname   pre-name of dirty images
+    dirtyname   pre-name of dirty images (normally the filename without '.image')
     cleanname   pre-name of clean images
     pbcut       cutoff level of .pb map to define area for flux integration
+                @todo clean() was using minpb=,   tclean() now uses pblimit=
+
+    dirty and clean images must have the same shape, and it is assumed that
+    your version of tclean() has also create the corresponding .residual and
+    .pb images.
 
     Example usage:
     --------------
 
     Adjust beam size of residual image and add model and residual.
     > tp2vistweak('dirty','clean')
+    This will expect 'dirty.image' and 'clean.image' as well as
+    'clean.pb' and 'clean.residual'
       
     """
 
@@ -1083,18 +1109,19 @@ def tp2vistweak(dirtyname,cleanname,pbcut=0.8):
     # Files
     # -----
 
-    # File names
+    # Existing File names
     dirty = dirtyname + '.image'
     clean = cleanname + '.image'
     resid = cleanname + '.residual'
     pbmap = cleanname + '.pb'
-
+    
+    # New File names
     newclean = cleanname + '.tweak.image'
     newresid = cleanname + '.tweak.residual'
 
     # Check if they exist
+    ok = True
     for f in [dirty,clean,resid,pbmap]:
-        ok = True
         if not os.path.exists(f): 
             ok = False
             print "%s does not exist" % (f)
@@ -1103,11 +1130,11 @@ def tp2vistweak(dirtyname,cleanname,pbcut=0.8):
         return
 
     for f in [newclean,newresid]:               # if output files
-        if os.path.exists(f):                   # already exist,
-            shutil.rmtree(f)                    # remove them
+        if os.path.exists(f):                   #   already exist,
+            shutil.rmtree(f)                    #   remove them
     
     # Temporary files
-    dirname = 'trash_tp2vistweak'               # temp directory for PSFs  
+    dirname = 'tmp_tp2vistweak'                 # temp directory for PSFs  
     if not os.path.exists(dirname):             # if dir not exists
         os.makedirs(dirname)                    # make fresh directory
 
@@ -1149,8 +1176,8 @@ def tp2vistweak(dirtyname,cleanname,pbcut=0.8):
         bmin_clean=imhead(diff_clean)['restoringbeam']['minor']['value']
         
 
-    # Sum over high PB area [omit (velwidth) multiplication for simplicity]
-    maskarea  = '\''+pbmap+'\'' + '>' +str(pbcut)           # CASA LEL friendly 
+    # Sum over high PB area 
+    maskarea  = '\'' + pbmap + '\'' + '>' + str(pbcut)           # CASA LEL friendly
     sum_dirty = imstat(diff_dirty,mask=maskarea)['sum'][0]
     sum_clean = imstat(diff_clean,mask=maskarea)['sum'][0]
     sum_dirty = sum_dirty * np.abs(dx_dirty*dy_dirty) / (cbm*bmaj_dirty*bmin_dirty)
@@ -1158,15 +1185,24 @@ def tp2vistweak(dirtyname,cleanname,pbcut=0.8):
 
 
     # Calculate beam ratio
-    #    Omega_clean/Omega_dirty = sum_dirty/sum_clean
+    #    Omega_dirty/Omega_clean = sum_clean/sum_dirty
     # ------------------------------------------------
-
-    omegarat = sum_dirty/sum_clean
+    omegarat = sum_clean/sum_dirty
 
     # Scale residual image and re-calculate cleaned image
     # ---------------------------------------------------
     immath(imagename=[resid],expr='IM0*'+str(omegarat),outfile=newresid)
     immath(imagename=[diff_clean,newresid],expr='IM0+IM1',outfile=newclean)
+
+
+    # Remove temp files
+    # -----------------
+    shutil.rmtree(diff_dirty)
+    shutil.rmtree(diff_clean)
+
+    # Put missing header key in new maps
+    imhead(newresid,mode='put',hdkey='bunit',hdvalue='Jy/beam')
+    imhead(newclean,mode='put',hdkey='bunit',hdvalue='Jy/beam')
 
     # Print
     # -----
@@ -1210,9 +1246,10 @@ def tp2vispl(mslist, ampPlot=True, show=False, outfig='plot_tp2viswt.png'):
     # Parameters
     # ----------
 
-    bin     =   0.5                             # rad bin width for ave [meter]
-    uvMax   = 150.0                             # max uv for plot [meter]
-    uvZoom  =  50.0                             # max uv for zoom plot [meter]
+    bin      =   0.5                            # rad bin width for ave [meter]
+    uvMax    = 150.0                            # max uv for plot [meter]
+    uvZoom   =  50.0                            # max uv for zoom plot [meter]
+    ampTPMax =   1.0                            # max TP amplitude
 
     # Separate MSs and find 
     # ---------------------
@@ -1338,6 +1375,8 @@ def tp2vispl(mslist, ampPlot=True, show=False, outfig='plot_tp2viswt.png'):
                 amp0  = ms.getdata('amplitude')['amplitude'].mean(axis=(0,1))
                                                 # ave for pol, spw
                 amp   = np.append(amp,amp0)     # append
+                if (iarray == 'VIRTUAL'):       # store max for TP
+                    ampTPMax = np.amax([ampTPMax,np.amax(amp0)])
 
             del wtemp, amp0
 
@@ -1408,6 +1447,7 @@ def tp2vispl(mslist, ampPlot=True, show=False, outfig='plot_tp2viswt.png'):
     axtr.set_xlim(0.0, uvZoom)                  # top-right
     axtr.set_xlabel("uvdistance (meter)",fontsize=fontsize)
     if ampPlot:
+        axtr.set_ylim(-0.1,ampTPMax*1.1)
         axtr.set_ylabel("amplitude",fontsize=fontsize)
     else:
         axtr.set_ylabel("weight [per visibility]",fontsize=fontsize)

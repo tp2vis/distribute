@@ -108,6 +108,21 @@ It creates ``.tweak.image`` and ``.tweak.residual``, which have a correct flux s
 
 * [example1:](example1.md)  M100 (data from CASA guide on [**Feather**](https://casaguides.nrao.edu/index.php/M100_Band3_Combine_4.3))
 
+## Comparisons of 7m+12m vs TP+7m+12m clean maps
+
+**The spiral galaxy M100:**
+
+Negative sidelobes around strong emissions in the 7m+12m map (left), but not in the TR+7m+12m map (right).
+
+![plot1](figures/M100_07m12m_TP07m12m_clean.png)
+
+**A giant molecular cloud in the Large Magellanic Cloud:**
+
+Most extended emissions are not recovered in the 7m+12m map (left), but recovered in the TR+7m+12m map (right).
+
+![plot1](figures/Cloud197_07m12m_TP07m12m_clean.png)
+
+
 ## References
 
 * Koda et al. 2011, ApJS, 193, 19 : http://adsabs.harvard.edu/abs/2011ApJS..193...19K
@@ -116,3 +131,8 @@ It creates ``.tweak.image`` and ``.tweak.residual``, which have a correct flux s
   * Measurement Set: https://casa.nrao.edu/casadocs/latest/reference-material/measurement-set
 
 * Jorsater and van Moorsel 1995, AJ, 110, 2037 : http://adsabs.harvard.edu/abs/1995AJ....110.2037J
+
+
+## Acknowledgements
+
+We thank Kazuki Tokuda for very helpful feedback.
