@@ -1,10 +1,10 @@
 # M100
 
-This example shows how to use TP2VIS with the M100 data. This Science Verification dataset is described at length in the [casaguide "M100 Band3 Combine 4.3"](https://casaguides.nrao.edu/index.php/M100_Band3_Combine_4.3), where the CASA task **feather()** was used to combine 12m, 7m and TP data.
+This example shows how to use TP2VIS with the M100 data. This Science Verification dataset is described at length in the [casaguide "M100 Band3 Combine 4.3"](https://casaguides.nrao.edu/index.php/M100_Band3_Combine_4.3) (or later versions), where the CASA task **feather()** was used to combine 12m, 7m and TP data.
 
-We use basic UNIX and CASA commands. TP2VIS requires **CASA 5 or above** and also requires as powerful a computer as what the above CASA guide requires.
+We use basic UNIX and CASA commands. TP2VIS requires **CASA 5.4 or above** and also requires as powerful a computer as what the above CASA guide requires.
 
-We encounter some warning/error messages from CASA, which we ignore as they seem leftovers from previous non-working versions of CASA.
+We encounter some warning/error messages from CASA, which we ignore as they seem leftovers from previous versions of CASA.
 
 
 ## tp2vis example
@@ -16,11 +16,11 @@ On the UNIX command line:
 
     wget https://bulk.cv.nrao.edu/almadata/sciver/M100Band3_12m/M100_Band3_12m_CalibratedData.tgz
     wget https://bulk.cv.nrao.edu/almadata/sciver/M100Band3ACA/M100_Band3_7m_CalibratedData.tgz
-    wget https://bulk.cv.nrao.edu/almadata/sciver/M100Band3ACA/M100_Band3_ACA_ReferenceImages.tgz
+    wget https://bulk.cv.nrao.edu/almadata/sciver/M100Band3ACA/M100_Band3_ACA_ReferenceImages_4.3.tgz
 
     tar xvfz M100_Band3_12m_CalibratedData.tgz
     tar xvfz M100_Band3_7m_CalibratedData.tgz
-    tar xvfz M100_Band3_ACA_ReferenceImages.tgz
+    tar xvfz M100_Band3_ACA_ReferenceImages_4.3.tgz
 
     mv M100_Band3_12m_CalibratedData/M100_Band3_12m_CalibratedData.ms .
     mv M100_Band3_7m_CalibratedData/M100_Band3_7m_CalibratedData.ms .
@@ -33,7 +33,7 @@ and in CASA:
 
 Cut down unnecessary spws from measurement sets as tp2vis assumes all spws in MSs to be used for imaging.
 
-Make a 7m+12m dirty and clean map for comparison later and check it
+Make a 7m+12m dirty and clean map for sanity check and comparison later.
 
     tclean(vis=['M100_12m_CO.ms','M100_7m_CO.ms'],imagename='M100_07m12m_CO_dirty', niter=0,gridder='mosaic',imsize=800,cell='0.5arcsec',phasecenter='J2000 12h22m54.9 +15d49m15',weighting='natural',threshold='0mJy',specmode='cube',outframe='LSRK',restfreq='115.271201800GHz',nchan=70,start='1400km/s',width='5km/s')
 
@@ -59,6 +59,8 @@ Due to CASA limitation, tp2vis currently uses 12m primary beam for mosaic, so th
 
 ### (2) Find an RMS noise of TP data cube
 
+Convert delivered FITS cube into the CASA image format with **importfits**.
+
 Use, e.g., first 6 channels to measure RMS in this example.
 
     imstat('M100_TP_CO_cube.bl.image',axes=[0,1])['rms'][:6].mean()
@@ -67,27 +69,39 @@ Use, e.g., first 6 channels to measure RMS in this example.
 ### (3) Load and run TP2VIS to generate a measurement set (MS) for TP
 
     execfile('tp2vis.py')
-    tp2vis('M100_TP_CO_cube.bl.image','M100_TP_CO.ms','12.ptg',nvgrp=20,rms=0.15379972353470259)
+    tp2vis('M100_TP_CO_cube.bl.image','M100_TP_CO.ms','12.ptg',nvgrp=5,rms=0.15)
 
-"nvgrp=" controls the number of visibilities generated (i.e., # of vis = 1035*nvgrp).
+"nvgrp=" controls the number of visibilities generated (i.e., # of vis = 1035*nvgrp). nvgrp=5 seems enough, but users may test different values and check any difference in results.
 
-### (4) Concat TP, 7m, and 12m measurement sets and run tclean to make dirty & clean maps
+### (*3) [Optional] Taper off emissions near the edge of TP map with the Tukey window
 
-Currently, tclean cannot deal with a list of MSs including the one from tp2vis. But after concat, it works:
+Skip this step for the first try. If emissions near the edge of TP map cause a problem in final map, you might suppress them with the Tukey window. It is applied before the conversion to visibilities.
 
-    concat(vis=['M100_TP_CO.ms','M100_7m_CO.ms','M100_12m_CO.ms'],concatvis='M100_TP07m12m_CO.ms',copypointing=False)
+    tp2vis('M100_TP_CO_cube.bl.image','M100_TP_CO.ms','12.ptg',nvgrp=5,rms=0.15, winpix=3)
+
+This example tapers off the edge emissions within three pixels of TP map from its edge.
+
+### (4) Run tclean to make dirty & clean maps
 
 Run tclean to generate dirty and clean maps. For step (6), we run the same tclean with "niter=0" for dirty map.
 
-    tclean(vis='M100_TP07m12m_CO.ms',imagename='M100_TP07m12m_CO_dirty', niter=0,gridder='mosaic',imsize=800,cell='0.5arcsec',phasecenter='J2000 12h22m54.9 +15d49m15',weighting='natural',threshold='0mJy',specmode='cube',outframe='LSRK',restfreq='115.271201800GHz',nchan=70,start='1400km/s',width='5km/s')
+    tclean(vis=['M100_12m_CO.ms','M100_7m_CO.ms','M100_TP_CO.ms'],imagename='M100_TP07m12m_CO_dirty', niter=0,gridder='mosaic',imsize=800,cell='0.5arcsec',phasecenter='J2000 12h22m54.9 +15d49m15',weighting='natural',threshold='0mJy',specmode='cube',outframe='LSRK',restfreq='115.271201800GHz',nchan=70,start='1400km/s',width='5km/s')
 
-    tclean(vis='M100_TP07m12m_CO.ms',imagename='M100_TP07m12m_CO_clean', niter=10000,gridder='mosaic',imsize=800,cell='0.5arcsec',phasecenter='J2000 12h22m54.9 +15d49m15',weighting='natural',threshold='0mJy',specmode='cube',outframe='LSRK',restfreq='115.271201800GHz',nchan=70,start='1400km/s',width='5km/s')
-
-You may see some warning messages from CASA from concat and tclean, but they appear to be bugs in those CASA tasks, so ignore.
+    tclean(vis=['M100_12m_CO.ms','M100_7m_CO.ms','M100_TP_CO.ms'],imagename='M100_TP07m12m_CO_clean', niter=10000,gridder='mosaic',imsize=800,cell='0.5arcsec',phasecenter='J2000 12h22m54.9 +15d49m15',weighting='natural',threshold='0mJy',specmode='cube',outframe='LSRK',restfreq='115.271201800GHz',nchan=70,start='1400km/s',width='5km/s')
 
 Check the maps, e.g., with "viewer", "imview", etc.
 
-It worked, but compared to 7m+12m DIRTY maps, the effect of TP is not immediately clear to eyes in TP+7m+12m DIRTY maps. To check, subtract 12m+7m dirty map from 12m+7m+TP dirty map:
+In case tclean crashes (perhaps, due to inconsistensies in CASA versions used in prior data reduction), we recommend to try some of the following examples (schematic, not exact commands).  In our experience, each command works for some subset of data, but not for all.
+
+    concat(vis=['12m','7m','TP'], concatvis='12m7mTP',copypointing=False)
+
+    split('12m and/or 7m and/or TP', **select all data**) with/without concat
+
+    mstransform('12m and/or 7m and/or TP', **e.g., to velocity grid of final map**) with/without concat
+
+    or any possible combination of these tasks.
+
+To check the effect of TP, subtract 12m+7m dirty map from 12m+7m+TP dirty map:
 
     immath(imagename=['M100_TP07m12m_CO_dirty.image','M100_07m12m_CO_dirty.image'],expr='IM0-IM1',outfile='difference.im')
 
@@ -104,7 +118,7 @@ If not satisfied with this combined 12m+7m+TP map, adjust WEIGHT in (*4) and com
 
 ### (*4) [Optional] Adjust WEIGHT
 
-tp2vis() has set the WEIGHT to an RMS-based one. If you are a first time user or are already happy with the RMS-based WEIGHT, skip this step and go to (5).
+tp2vis has set the WEIGHT to an RMS-based one. If you are a first time user or are already happy with the RMS-based WEIGHT, skip this step and go to (5).
 
 Here we show how to manipulate WEIGHT for those who want more control.
 
@@ -118,7 +132,7 @@ First, compare WEIGHT in TP and 12m, 7m visibilities. "mode='stat'" in tp2viswt 
             M100_TP_CO.ms    0   47    1   972900   /chanw     0.002042     0.002042     0.002042     0.000000
                                                      /1GHz     1.062303     1.062303     1.062303     0.000000
 
-The first row is statistics "per channel width", which is what is stored in MS. The second is "per 1GHz width" and is useful for comparison of multiple MSs. It takes a list as well:
+The first row is statistics "per channel width", which is what is stored in MS. The second is "per 1GHz width" and is useful for comparison of multiple MSs. It takes a list of MSs as well:
 
     tp2viswt(['M100_7m_CO.ms','M100_12m_CO.ms'],mode='stat')
     TP2VISWT: statistics of weights
@@ -178,21 +192,19 @@ For the next optional step, you may run the same tclean, but with "niter=0" for 
 
 ### (6) Correction for beam size mismatch
 
-This step is not within the original scope of TP2VIS, but may be useful.
+This step is for general ALMA imaging, not only for TP2VIS.
 
 Note that (cleaned map) = (clean component map) + (residual map). The last two maps have different units of flux densities: Jy/(clean beam) vs Jy/(dirty beam). Unfortunately, the clean beam and dirty beam are not guaranteed to have the same area, which causes a problem in flux calculation (see [Jorsater and van Moorsel 1995](http://adsabs.harvard.edu/abs/1995AJ....110.2037J); [Koda et al. 2011](http://adsabs.harvard.edu/abs/2011ApJS..193...19K)).
 
 To circumvent this, the residual map may be scaled, so that its unit becomes Jy/(clean beam).
 
-    tp2vistweak('M100_TP07m12m_CO_dirty','M100_TP07m12m_CO_clean')         # need both dirty and clean image sets
+    tp2vistweak('M100_TP07m12m_CO_dirty','M100_TP07m12m_CO_clean',mask='M100_TP07m12m_CO_clean.image>0.2')  # need both dirty and clean image sets
+
+tp2vistweak assumes that the "*.pb" (or "*.flux"), "*.residual", and "*.image" from tclean are kept with their original names. Include only the part of map with significant emission with "mask=" (play around with it and see the "dirty/clean" beam ratio in terminal output is stable).
 
 It generates a re-scaled residual map ".tweak.residual", and re-calcluated cleaned map ".tweak.image". Use this cleaned map for science.
 
 
 ## Acknowledgements and Data Usage
 
-This paper makes use of the following ALMA data: ADS/JAO.ALMA#2011.0.00004.SV.
-ALMA is a partnership of ESO (representing its member states), NSF (USA)
-and NINS (Japan), together with NRC (Canada) and NSC and ASIAA (Taiwan),
-and KASI (Republic of Korea), in cooperation with the Republic of Chile.
-The Joint ALMA Observatory is operated by ESO, AUI/NRAO and NAOJ.
+This paper makes use of the following ALMA data: ADS/JAO.ALMA#2011.0.00004.SV. ALMA is a partnership of ESO (representing its member states), NSF (USA) and NINS (Japan), together with NRC (Canada) and NSC and ASIAA (Taiwan), and KASI (Republic of Korea), in cooperation with the Republic of Chile. The Joint ALMA Observatory is operated by ESO, AUI/NRAO and NAOJ.

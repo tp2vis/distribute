@@ -1,30 +1,33 @@
 # tp2vis
-Total Power to Visibilities (TP2VIS): an ALMA Development Study (2016/17)
+Total Power to Visibilities (TP2VIS): an ALMA Cycle 4 Development Study
 
 Jin Koda, Peter Teuben, Adele Plunkett, Tsuyoshi Sawada, Crystal Brogan, Ed Formalont
 
-This project provides tools to create visibilities from a single dish cube using the method of [Koda et al. 2011](http://adsabs.harvard.edu/abs/2011ApJS..193...19K).
+This project provides tools to create visibilities from a single dish cube using the method of [Koda et al. 2011](http://adsabs.harvard.edu/abs/2011ApJS..193...19K) and Koda et al. 2019 (PASP in press).
 The TP visibilities can then be combined with the interferometric visibilities in a joint deconvolution using for example CASA's [**tclean()**](https://casa.nrao.edu/casadocs/latest/global-task-list/task_tclean/about) method.
-TP2VIS requires **CASA 5 or above** and as powerful a computer as what the CASA Feather guide requires.
+TP2VIS requires **CASA 5.4 or above** and as powerful a computer as what the CASA Feather guide requires.
 
 Our github repo for distribution : https://github.com/tp2vis/distribute
 
 
 ## Release note
 
-The current beta release is for experts with experience on interferometer data reduction with CASA. We seek feedback from the experts for improvements. It has been working science-ready for our team, and we want to know if it works for you. Release to non-experts is planned in future.
+This release assumes that users have experience on interferometer data reduction with CASA so that they can catch any anomaly by themselves. This release is ready for scientific use, but please let us know if you encounter any problem.
+
+The following acknowledgement would be appreciated if you decide to use TP2VIS: "This work made use of TP2VIS (Koda et al. 2011 ApJS, 139, 19; Koda et al. 2019, PASP in press)".
+
 
 ## Download
 
 Click "Clone or download" on [top page](https://github.com/tp2vis/distribute) for download options, or run
 
-       git clone git@github.com:tp2vis/distribute
+       git clone https://github.com/tp2vis/distribute.git
 
 You need only one script "tp2vis.py".
 
 ## Usage
 
-To give you a quick idea how to run TP2VIS, here are the basic flow of commands in CASA, broken into 5 pieces. This document gives an overall flow, but look at examples listed below for more info.
+To give you a quick idea how to run TP2VIS, here are the basic flow of commands in CASA, broken into 6 pieces. This document gives an overall flow, but look at examples listed below for more info.
 
 
 ### 1. Preparations:
@@ -47,13 +50,13 @@ This can be a little cumbersome, so in the examples listed below you can see exa
 
 #### 1.2: Find a reasonable RMS
 
-We need to know the RMS in the TP cube from some line free channels. For example, you might be able
-to use the first 10 channels of your TP cube
+We need to know the RMS in the TP cube from some line free channels. For example, you might be able to use the first 10 channels of your TP cube
 
+       importfits(fitsimage='tp.fits',imagename='tp.im')              # convert to CASA image format
        imstat('tp.im',axes=[0,1])['rms'][:10].mean()
        -> 0.67
 
-#### 1.3: Cutting down the MS dataset sizes.
+#### 1.3: Cutting down the 12m & 7m MS dataset sizes.
 
 Cut down unnecessary spws from measurement sets as tp2vis assumes all spws to be used for imaging.
 CASA tasks such as
@@ -66,7 +69,6 @@ can be useful.
 ### 2. Load and run TP2VIS:
 
        execfile('tp2vis.py')                                          # load tp2vis 
-
        tp2vis('tp.im','tp.ms','12m.ptg',rms=0.67)                     # make visibilities
 
 ### 3. [optional] Expert mode Weighting Schemes
@@ -78,9 +80,7 @@ can be useful.
 
 ### 4. Some CASA workarounds to get files recognized properly
 
-Currently we are suffering from CASA crashing when **tclean()** uses a list of MS files that included the TP MS, so we need to
-[**concat()**](https://casa.nrao.edu/casadocs/latest/global-task-list/task_concat/about)
-them.
+In case tclean crashes in the next step (perhaps due to an inconsistency in CASA versions), there is no single workaround. The below worked in some cases (more in [example1:](example1.md)):
 
        concat(vis=['12m.ms','7m.ms','tp.ms'], concatvis='all.ms',copypointing=False)
 
@@ -96,13 +96,15 @@ Make dirty images as well
 
        tclean(vis='all.ms', imagename='all_dirty', niter=0, ...)                     # make dirty map
 
-### (6) [optional] Correction for beam size mismatch
+### 6. Correction for beam size mismatch
+
+This step is for general interferometer imaging, not only for TP2VIS.
 
 Once dirty and cleaned images are generated, one may correct for the discrepancy between dirty and clean/restore beam areas (see [**Jorsater and van Moorsel 1995**](http://adsabs.harvard.edu/abs/1995AJ....110.2037J)).
 
        tp2vistweak('all_dirty','all_clean')                   # adjust dirty beam size in residual image
 
-It creates ``.tweak.image`` and ``.tweak.residual``, which have a correct flux scale.
+It assumes that all outputs from tclean() are kept intact (no name change). It creates ``.tweak.image`` and ``.tweak.residual``, which have a correct flux scale.
 
 ## Examples
 
@@ -127,6 +129,8 @@ Most extended emissions are not recovered in the 7m+12m map (left), but recovere
 
 * Koda et al. 2011, ApJS, 193, 19 : http://adsabs.harvard.edu/abs/2011ApJS..193...19K
 
+* Koda, Teuben, Sawada, Plunkett & Fomalont 2019, PASP in press
+
 * CASA reference manual and cookbook : http://casa.nrao.edu/docs/cookbook/
   * Measurement Set: https://casa.nrao.edu/casadocs/latest/reference-material/measurement-set
 
@@ -135,4 +139,4 @@ Most extended emissions are not recovered in the 7m+12m map (left), but recovere
 
 ## Acknowledgements
 
-We thank Kazuki Tokuda for very helpful feedback.
+We thank the NRAO staff, in particular, Remy Indebetouw, Kumar Golap, Jennifer Donovan Meyer, Crystal Brogan, and John Carpenter for their help. We also thank Kazuki Tokuda, Fumi Egusa, Manuel Fernández, and Mercedes Vazzano for feedback on an early version of TP2VIS.
