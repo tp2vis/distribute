@@ -80,7 +80,7 @@ can be useful.
 
 ### 4. Some CASA workarounds to get files recognized properly
 
-In case tclean crashes in the next step (perhaps due to an inconsistency in CASA versions), there is no single workaround. The below worked in some cases (more in [example1:](example1.md), section 4):
+In case tclean crashes in the next step (perhaps due to an inconsistency in CASA versions), there is no single workaround. The below worked in some cases (more in [example1](example1.md), section 4):
 
        concat(vis=['12m.ms','7m.ms','tp.ms'], concatvis='all.ms',copypointing=False)
 
