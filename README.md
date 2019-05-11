@@ -129,7 +129,7 @@ Most extended emissions are not recovered in the 7m+12m map (left), but recovere
 
 * Koda et al. 2011, ApJS, 193, 19 : http://adsabs.harvard.edu/abs/2011ApJS..193...19K
 
-* Koda, Teuben, Sawada, Plunkett & Fomalont 2019, PASP in press
+* Koda, Teuben, Sawada, Plunkett & Fomalont 2019, PASP, 131, 54505: https://ui.adsabs.harvard.edu/abs/2019PASP..131e4505K
 
 * CASA reference manual and cookbook : http://casa.nrao.edu/docs/cookbook/
   * Measurement Set: https://casa.nrao.edu/casadocs/latest/reference-material/measurement-set
