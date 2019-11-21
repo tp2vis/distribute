@@ -24,6 +24,16 @@ import matplotlib.pyplot as plt
 import pyfits
 from scipy.ndimage import distance_transform_edt
 
+from tasks import imhead, immath
+from taskinit import msmdtool, casalog, qatool, tbtool, mstool, iatool, vptool, smtool
+vp = vptool()
+msmd = msmdtool()
+ms = mstool()
+qa = qatool()
+tb = tbtool()
+ia = iatool()
+sm = smtool()
+
 ## ===========================================
 ## Global parameters: observatory & telescopes
 ## ===========================================
